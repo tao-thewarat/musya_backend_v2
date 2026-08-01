@@ -1,7 +1,8 @@
 # Environment
-.env
-.env.local
-.env.*.local
+# .env* กว้างไว้ เพราะ .env.bak เคยหลุดผ่านรูของ pattern เดิม
+# (มี GEMINI/OPENAI/TAVILY key, DB_PASSWORD, MINIO_SECRET_KEY อยู่จริง)
+.env*
+!.env.example
 
 # Python
 __pycache__/
@@ -52,3 +53,7 @@ desktop.ini
 
 # Docker
 *.override.yml
+
+# คลังความรู้ Obsidian — ดูแลใน repo ของตัวเอง ไม่เอามาปนกับโค้ด
+# (525 ไฟล์ เป็นข้อมูล ไม่ใช่ซอร์ส และเปลี่ยนแปลงคนละจังหวะกับโค้ด)
+src/obsidian_knowledge/

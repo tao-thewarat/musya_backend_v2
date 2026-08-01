@@ -86,6 +86,24 @@ def _obsidian_notes_to_articles_text(notes: list) -> str:
     return "\n\n".join(lines)
 
 
+def _coverage_note(obs_result) -> str:
+    """สรุป "อ่านไปแค่ไหน" จาก metadata.coverage ให้ผู้ใช้เห็นข้างสถานะของ agent
+
+    ทำไมต้องมี: คลังความรู้ (~8.4M ตัวอักษร) ใหญ่กว่าเพดาน context (500k) หลายเท่า
+    ระบบจึงอ่านได้แค่บางส่วนทุกครั้ง — ถ้าไม่บอก ผู้ใช้จะตีความคำตอบ "ไม่พบข้อมูล"
+    ว่าคลังไม่มีข้อมูลเรื่องนั้น ทั้งที่จริงคือส่วนนั้นยังไม่ถูกอ่าน
+    """
+    cov = (getattr(obs_result, "metadata", None) or {}).get("coverage") or {}
+    if not cov.get("included"):
+        return ""
+    parts = [f"คัดจาก {cov.get('candidates')} โน้ต → อ่านเต็ม {cov.get('included')} โน้ต"]
+    if cov.get("provinces"):
+        parts.append(f"ครอบคลุม {', '.join(cov['provinces'])}")
+    if cov.get("terms"):
+        parts.append(f"คำค้น: {' · '.join(cov['terms'])}")
+    return " · ".join(parts)
+
+
 def _brief(text: str, limit: int = 150) -> str:
     text = re.sub(r"\s+", " ", (text or "").strip())
     return text[:limit] + ("…" if len(text) > limit else "")
@@ -139,6 +157,7 @@ def _orchestrate(
     doc_type: str = "",
     retry_source: str = "",
     report_title: str = "",
+    chat_provider: str = "",
 ) -> None:
     """Full pipeline entry point — runs in a background thread."""
     def put(ev: dict[str, Any]) -> None:
@@ -294,7 +313,33 @@ def _orchestrate(
             # หัวข้อ (แทน keyword-correction แบบเดิมที่กันได้เฉพาะเคสมี keyword ตรง ๆ)
             from src.agents.router import route_stats_domains
             csv_domains, is_multi, route_reasoning = route_stats_domains(prompt, history_context)
-            csv_domains = [d for d in csv_domains if d.code in ("d2", "d3", "d4")] or [_DOMAINS["d3"]]
+            csv_domains = [d for d in csv_domains if d.code in ("d2", "d3", "d4")]
+
+            # ── router บอกว่า "ไม่เข้าพวก" ต้องแจ้งตรง ๆ ห้ามเดาเป็น d3 ────────────
+            # ⚠️ เดิมเขียน `or [_DOMAINS["d3"]]` ทำให้คำว่า "ไม่รู้" ถูกกลืนเป็น "NCD"
+            # ผู้ใช้เห็น badge "สถิติ: โรคไม่ติดต่อ" ทั้งที่ router เพิ่งตอบว่าคำถามนี้
+            # ไม่เกี่ยวกับ domain ไหนเลย แล้วได้ "ไม่พบข้อมูล" ซึ่งฟังเหมือนค้นแล้วไม่เจอ
+            # ทั้งที่ความจริงคือคำถามอยู่นอกขอบเขตของปุ่มนี้ — คนละเรื่องกัน
+            if not csv_domains:
+                from src.tools.missing_data_logger import log_missing_data
+                log_missing_data(prompt, domain="stats", reason="out_of_scope", session_id=session_id)
+                warn = (
+                    "## คำถามนี้อยู่นอกขอบเขตของเครื่องมือ “ข้อมูลสถิติ”\n\n"
+                    "เครื่องมือนี้ตอบได้เฉพาะชุดข้อมูลตัวชี้วัดที่มีในระบบ ได้แก่ "
+                    "**สุขภาพจิต**, **โรคไม่ติดต่อ (NCDs)**, **โภชนาการ** "
+                    "และ **อุบัติเหตุทางถนน** (เขตสุขภาพที่ 10)\n\n"
+                    "**ข้อเสนอแนะ**\n"
+                    "- ถามโดยไม่เลือกเครื่องมือ เพื่อให้ AI ตอบจากความรู้ทั่วไป\n"
+                    "- หรือกดปุ่ม **“คลังความรู้”** เพื่อค้นจากเอกสารของเขตสุขภาพที่ 10\n"
+                    "- หากต้องการชุดข้อมูลหัวข้อนี้ กรุณาแจ้งผู้ดูแลระบบให้เพิ่มเข้าระบบ"
+                )
+                put({"type": "agent_done", "step": "router", "agentName": "Router Agent",
+                     "result": "คำถามอยู่นอกขอบเขตชุดข้อมูลสถิติ", "reasoning": route_reasoning})
+                if session_id:
+                    append_history(session_id, "assistant", warn)
+                put({"type": "result", "content": warn})
+                return
+
             is_multi = len(csv_domains) >= 2
             domain_names_th = " + ".join(d.name_th for d in csv_domains)
             put({
@@ -473,7 +518,8 @@ def _orchestrate(
                     on_delta=lambda t: put({"type": "obsidian_chunk", "step": "obsidian_search", "text": t}),
                 ).result()
             put({"type": "agent_done", "step": "obsidian_search", "agentName": "Obsidian Knowledge Searcher",
-                 "result": f"พบ {len(obs_result.notes_referenced)} notes"})
+                 "result": f"พบ {len(obs_result.notes_referenced)} notes",
+                 "reasoning": _coverage_note(obs_result)})
             if session_id:
                 append_history(session_id, "assistant", obs_result.content)
             put({"type": "result", "content": obs_result.content,
@@ -493,7 +539,9 @@ def _orchestrate(
                 _articles_to_text,
             )
             from src.agents.obsidian_fullcontext import run_obsidian_ask_fullcontext
-            from src.domains import DOMAINS as _DOMAINS
+            # ⚠️ ห้าม `from src.domains import DOMAINS as _DOMAINS` ซ้ำตรงนี้ — Python
+            # จะถือว่า _DOMAINS เป็น local ของทั้งฟังก์ชัน ทำให้โค้ดที่ใช้มันก่อนถึง
+            # บรรทัดนี้พังด้วย UnboundLocalError (โมดูล import ไว้ตั้งแต่บรรทัด 24 แล้ว)
 
             api_key = os.getenv("GEMINI_API_KEY", "")
             # ⚠️ ใช้ report_title (ชื่อเรื่องสั้นๆ ที่ผู้ใช้พิมพ์จริง) แยกจาก prompt (query
@@ -888,6 +936,18 @@ def _orchestrate(
             domain = domains[0] = _ROUTER_DOMAINS.get("obsidian", domain)
             accident_redirected_to_obsidian = True
 
+        # ── ไม่เลือกเครื่องมือ = คุยกับ AI ทั่วไป ห้ามตกลง CSV pipeline ──────────
+        # ⚠️ วัดจริง: คำถาม "ขอข้อมูลการควบคุมโรคพยาธิใบไม้ตับ" ถูก router จัดเป็น d3
+        # แล้วเข้า CSV pipeline ตัวเดียวกับปุ่ม "ข้อมูลสถิติ" ผลคือทั้งสองโหมดคืน
+        # "ไม่พบข้อมูล" ข้อความเดียวกันเป๊ะ — ปุ่มเครื่องมือจึงเหมือนไม่มีผลอะไรเลย
+        #
+        # CSV pipeline เป็นของปุ่ม "ข้อมูลสถิติ" โดยเฉพาะ (mode == "stats" ซึ่ง return
+        # ไปตั้งแต่ด้านบนแล้ว) โหมดนี้จึงเหลือแค่ 2 ปลายทาง: คลังความรู้ หรือ AI ทั่วไป
+        # ส่วนชื่อตัวชี้วัดสถิติที่เกี่ยวข้องยังถูกแนบเข้าคำตอบผ่าน _find_stats_context()
+        if domain.code in ("d2", "d3", "d4"):
+            domain = domains[0] = _DOMAINS["d0"]
+            is_multi = False
+
         # ── Obsidian Knowledge Vault pipeline ────────────────────────────────
         if domain.code == "obsidian":
             put({"type": "agent_start", "step": "obsidian_search", "agentName": "Obsidian Knowledge Searcher"})
@@ -918,7 +978,8 @@ def _orchestrate(
                 )
                 obs_result.content = notice + obs_result.content
             put({"type": "agent_done", "step": "obsidian_search", "agentName": "Obsidian Knowledge Searcher",
-                 "result": f"พบ {len(obs_result.notes_referenced)} notes"})
+                 "result": f"พบ {len(obs_result.notes_referenced)} notes",
+                 "reasoning": _coverage_note(obs_result)})
             if session_id:
                 append_history(session_id, "assistant", obs_result.content)
             put({"type": "result", "content": obs_result.content,
@@ -961,6 +1022,7 @@ def _orchestrate(
                 session_id=session_id,
                 reasoning=reasoning,
                 vault_ctx=vault_ctx,
+                chat_provider=chat_provider,
             )
 
     except Exception as exc:
@@ -994,6 +1056,7 @@ async def _handle_analyze(request: AnalyzeRequest) -> StreamingResponse:
             "doc_type": request.doc_type or "",
             "retry_source": request.retry_source or "",
             "report_title": request.report_title or "",
+            "chat_provider": request.chat_provider or "",
         },
         daemon=True,
     )

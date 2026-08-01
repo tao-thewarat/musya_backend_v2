@@ -56,12 +56,28 @@ _GEO_SYNONYMS = [
     "อำเภอ", "district", "amphoe", "amphur",
     "เขต", "zone", "พื้นที่", "area",
     "hospcode", "สถานพยาบาล", "รพ.",
+    # ชื่อนอกมาตรฐานที่พบจริงในคลัง — ไม่เติมไว้ 3 ไฟล์นี้จะเชื่อมข้ามไฟล์ไม่ได้เลย
+    # a_name       = ชื่ออำเภอ (ไฟล์ 476686 โรคไต, 802827 ตรวจไตในเบาหวาน)
+    # sub-province = อำเภอ (ไฟล์ 141988 ผู้ป่วยพยายามฆ่าตัวตาย)
+    "a_name", "sub-province", "subprovince",
 ]
 
 _THAI_PROVINCE_SAMPLES = [
     "กรุงเทพ", "อุบล", "ขอนแก่น", "เชียงใหม่", "อุดร",
     "นครราชสีมา", "มุกดาหาร", "ยโสธร", "ศรีสะเกษ", "อำนาจเจริญ",
     "นครพนม", "สกลนคร", "บึงกาฬ",
+]
+
+# ── คอลัมน์ "ปี" ที่พบจริงในคลัง — เขียนไว้ 4 แบบเพราะไฟล์ตั้งชื่อไม่ตรงกัน ────
+# ⚠️ ต้องเชื่อมด้วยปีเสมอเมื่อทั้งสองไฟล์มีมิติเวลา ไม่งั้น merge บนจังหวัดอย่างเดียว
+# จะจับคู่ข้อมูลข้ามปีกันมั่ว (จังหวัดหนึ่งมี 5 ปี × อีกไฟล์ 5 ปี = 25 แถวปลอม)
+# กลายเป็น cartesian product ที่ตัวเลขผิดโดยไม่มีสัญญาณเตือนใด ๆ
+# ⚠️ ต้องเทียบกับหัวคอลัมน์จริงเสมอ ไม่ใช่เดาเอา — รอบแรกใส่ 4 แบบแล้วยังพลาด 2 ไฟล์
+# ที่ใช้ `ปี_พศ` (ไม่มีจุด) ตรวจกับคลังจริงทั้ง 45 ไฟล์แล้วครอบคลุม 44/45
+# (เหลือ 570454 ค่ามาตรฐาน BMI ที่เป็นตารางอ้างอิง ไม่มีมิติเวลาโดยธรรมชาติ)
+_YEAR_SYNONYMS = [
+    "ปีงบประมาณ", "ปีข้อมูล", "ปีพ.ศ.", "ปีพศ", "ปี",
+    "year_be", "year", "fiscalyear", "yearbe",
 ]
 
 
@@ -103,28 +119,88 @@ def _detect_geo_keys(schemas_info: list[dict]) -> dict[str, str]:
     return mapping
 
 
-def _build_merge_recipe(geo_keys: dict[str, str]) -> str:
-    """Convert geo_keys map into code-generator instructions."""
+def _norm_col(col: str) -> str:
+    return col.lower().replace(" ", "").replace("_", "")
+
+
+def _detect_year_keys(schemas_info: list[dict]) -> dict[str, str]:
+    """หาคอลัมน์ "ปี" ของแต่ละ DataFrame เพื่อใช้เป็นแกนเชื่อมคู่กับพื้นที่
+
+    ทำไมต้องมี: 36 จาก 45 ไฟล์ในคลังมีมิติเวลา แต่ตั้งชื่อคอลัมน์ไม่ตรงกันถึง 4 แบบ
+    (`ปี` · `ปี พ.ศ.` · `ปีงบประมาณ` · `Year_BE`) ถ้า merge บนจังหวัดอย่างเดียว
+    ข้อมูล 5 ปีของสองไฟล์จะถูกจับคู่ข้ามปีกันจนได้ตัวเลขผิด **โดยไม่มีสัญญาณเตือน**
+
+    เทียบแบบ "ตรงทั้งคำ" ไม่ใช่ substring — คำว่า `ปี` สั้นมาก ถ้าใช้ substring จะไป
+    โดนคอลัมน์อย่าง `ประชากรรายปี` หรือ `ปีที่ผ่านมา` ที่ไม่ใช่แกนเวลา
+    """
+    mapping: dict[str, str] = {}
+    wanted = {_norm_col(k) for k in _YEAR_SYNONYMS}
+    for info in schemas_info:
+        df_key = f"df{info['index']}"
+        for col in info.get("cols", []):
+            if _norm_col(col) in wanted:
+                mapping[df_key] = col
+                break
+    return mapping
+
+
+def _build_merge_recipe(
+    geo_keys: dict[str, str],
+    year_keys: dict[str, str] | None = None,
+) -> str:
+    """แปลงแกนที่ตรวจพบเป็นคำสั่งให้ Code Generator เขียน merge
+
+    เชื่อมด้วย **พื้นที่ + ปี** เมื่อทุก DataFrame มีคอลัมน์ปี — ถ้าเชื่อมแต่พื้นที่
+    ข้อมูลจะถูกจับคู่ข้ามปีจนตัวเลขผิดแบบเงียบ ๆ (ดู `_detect_year_keys`)
+    """
     if not geo_keys:
-        return "# ไม่พบ geographic key — ให้วิเคราะห์แต่ละ DataFrame แยกกัน"
+        return (
+            "# ⚠️ ไม่พบคอลัมน์พื้นที่ที่ใช้เชื่อมข้อมูลได้\n"
+            "# ให้วิเคราะห์แต่ละ DataFrame แยกกัน **และต้องบอกผู้ใช้ตรง ๆ** ในคำตอบว่า\n"
+            "#   'ไม่สามารถเชื่อมข้อมูลสองชุดเข้าด้วยกันได้ จึงวิเคราะห์แยกกัน'\n"
+            "# ห้ามนำเสนอผลเหมือนว่าวิเคราะห์ร่วมกันสำเร็จ"
+        )
 
+    year_keys = year_keys or {}
     values = list(geo_keys.values())
-    canonical = max(set(values), key=values.count)  # most-common column name
+    canonical = max(set(values), key=values.count)
 
-    lines = ["# Geographic key ที่ตรวจพบ:"]
+    # ใช้ปีเป็นแกนร่วมได้ก็ต่อเมื่อ **ทุก** DataFrame มีคอลัมน์ปี — ถ้าขาดแม้ตัวเดียว
+    # การใส่ปีเข้าไปจะทำให้ merge ได้ 0 แถว ซึ่งแย่กว่าการเชื่อมแค่พื้นที่
+    use_year = bool(year_keys) and set(year_keys) >= set(geo_keys)
+    year_canonical = ""
+    if use_year:
+        yv = list(year_keys.values())
+        year_canonical = max(set(yv), key=yv.count)
+
+    lines = ["# แกนเชื่อมข้อมูลที่ตรวจพบ:"]
     renames: list[str] = []
     for df_key, col in geo_keys.items():
-        lines.append(f"#   {df_key}: column = '{col}'")
+        y = year_keys.get(df_key, "—")
+        lines.append(f"#   {df_key}: พื้นที่ = '{col}'" + (f" · ปี = '{y}'" if use_year else ""))
         if col != canonical:
             renames.append(f"{df_key} = {df_key}.rename(columns={{'{col}': '{canonical}'}})")
+        if use_year and y != year_canonical:
+            renames.append(f"{df_key} = {df_key}.rename(columns={{'{y}': '{year_canonical}'}})")
 
-    lines.append(f"# Canonical merge key: '{canonical}'")
+    if use_year:
+        on = f"['{canonical}', '{year_canonical}']"
+        lines.append(f"# แกนหลัก: พื้นที่ '{canonical}' + ปี '{year_canonical}'")
+        lines.append("# ⚠️ ต้องเชื่อมด้วย 'ปี' ด้วยเสมอ — เชื่อมแค่พื้นที่จะจับคู่ข้อมูลข้ามปีกัน")
+        lines.append("#    ทำให้จำนวนแถวบานและค่าที่คำนวณผิดโดยไม่มีสัญญาณเตือน")
+        lines.append("# ⚠️ ปีอาจเก็บเป็น str/int คนละแบบ — แปลงให้เหมือนกันก่อน merge:")
+        lines.append(f"#    for d in (df1, df2): d['{year_canonical}'] = d['{year_canonical}'].astype(str).str.strip()")
+    else:
+        on = f"'{canonical}'"
+        lines.append(f"# แกนหลัก: พื้นที่ '{canonical}' (ไม่มีมิติปีครบทุกไฟล์ จึงเชื่อมด้วยพื้นที่อย่างเดียว)")
+        if year_keys:
+            lines.append("# ⚠️ มีบางไฟล์เท่านั้นที่มีคอลัมน์ปี — ถ้าผลลัพธ์รวมหลายปีเข้าด้วยกัน")
+            lines.append("#    ต้องบอกผู้ใช้ว่าตัวเลขเป็นการรวมข้ามปี ไม่ใช่ปีใดปีหนึ่ง")
+
     if renames:
         lines.append("# Rename ก่อน merge:")
         lines.extend(f"# {r}" for r in renames)
-        lines.append(f"# merge: pd.merge(df1, df2, on='{canonical}', how='outer')")
-    else:
-        lines.append(f"# merge: pd.merge(df1, df2, on='{canonical}', how='outer')")
+    lines.append(f"# merge: pd.merge(df1, df2, on={on}, how='outer')")
 
     return "\n".join(lines)
 
@@ -648,7 +724,8 @@ def run_multi_pipeline(
 
     # ── STEP 3: Geographic Key Detector (Step 1: pure keyword, no LLM) ───────
     geo_keys = _detect_geo_keys(schemas_info)
-    merge_recipe = _build_merge_recipe(geo_keys)
+    year_keys = _detect_year_keys(schemas_info)
+    merge_recipe = _build_merge_recipe(geo_keys, year_keys)
 
     put({
         "type": "agent_done",
@@ -656,6 +733,7 @@ def run_multi_pipeline(
         "agentName": "Geographic Key Detector",
         "result": merge_recipe,
         "geoKeys": geo_keys,
+        "yearKeys": year_keys,
     })
 
     # ── STEP 4: Multi-DataFrame Code Generator ────────────────────────────────

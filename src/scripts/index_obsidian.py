@@ -9,8 +9,15 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_frontmatter(content: str) -> tuple[dict, str]:
-    """Extract YAML frontmatter and return (meta_dict, body_without_frontmatter)."""
+    """Extract YAML frontmatter and return (meta_dict, body_without_frontmatter).
+
+    ⚠️ ต้องตัด BOM (U+FEFF) ทิ้งก่อนเช็ค "---" — ไฟล์ .md ในคลัง 83 จาก 533 ไฟล์
+    ขึ้นต้นด้วย BOM ทำให้ content.startswith("---") เป็น False → frontmatter
+    ไม่ถูกอ่านเลย → เสีย title/tags/year และที่สำคัญคือ source/source_file
+    (โน้ตเหล่านั้นจึงผูกกับ PDF ใน MinIO ไม่ได้ ทั้งที่ระบุที่มาไว้ครบในไฟล์)
+    """
     meta: dict = {}
+    content = content.lstrip("﻿")
     body = content
     if content.startswith("---"):
         end = content.find("\n---", 3)
@@ -28,27 +35,38 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
     return meta, body
 
 
-def _infer_province(path: Path, vault_root: Path) -> str | None:
-    """Infer province from the top-level folder under vault root."""
+# โฟลเดอร์ครอบระดับเขต — ไม่ใช่ชื่อจังหวัด ต้องข้ามไปดูชั้นถัดไป
+_ZONE_PREFIX = "เขต10"
+
+
+def _rel_parts_after_zone(path: Path, vault_root: Path) -> tuple[str, ...]:
+    """คืน path ส่วนที่อยู่ "ใต้ระดับเขต" แล้ว
+
+    ⚠️ vault มีโครงสร้าง 2 แบบปนกันตามยุคที่ ingest:
+      • เก่า: <จังหวัด>/...            ← ตอนนี้ไม่มีแล้ว (ย้ายเข้า เขต10/ หมดแล้ว)
+      • ใหม่: เขต10/<จังหวัด>/...
+    ถ้าไม่ข้าม "เขต10" ตัว _infer_province จะคืนค่าเป็น "เขต10" แทนชื่อจังหวัดจริง
+    ซึ่งทำให้โน้ตทั้งหมดหลุดออกจากการจัดกลุ่มรายจังหวัด (เจอจริงตอนย้ายโครงสร้าง)
+    """
     try:
-        rel = path.relative_to(vault_root)
-        parts = rel.parts
-        if len(parts) >= 2:
-            return parts[0]
+        parts = path.relative_to(vault_root).parts
     except ValueError:
-        pass
-    return None
+        return ()
+    return parts[1:] if parts and parts[0] == _ZONE_PREFIX else parts
+
+
+def _infer_province(path: Path, vault_root: Path) -> str | None:
+    """Infer province from the top-level folder under vault root (ข้ามโฟลเดอร์ระดับเขต)."""
+    parts = _rel_parts_after_zone(path, vault_root)
+    return parts[0] if len(parts) >= 2 else None
 
 
 def _infer_district(path: Path, vault_root: Path) -> str | None:
     """Infer district from folder name starting with อ."""
-    try:
-        rel = path.relative_to(vault_root)
-        for part in rel.parts[1:-1]:
-            if part.startswith("อ."):
-                return part[2:]
-    except ValueError:
-        pass
+    parts = _rel_parts_after_zone(path, vault_root)
+    for part in parts[1:-1]:
+        if part.startswith("อ."):
+            return part[2:]
     return None
 
 

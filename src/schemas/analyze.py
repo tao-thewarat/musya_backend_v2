@@ -25,3 +25,6 @@ class AnalyzeRequest(BaseModel):
     # ชื่อเรื่องสั้นๆ ที่ผู้ใช้พิมพ์จริง (แยกจาก prompt ซึ่งอาจถูกเสริมด้วยหัวข้อที่เลือก
     # ไว้ล่วงหน้าจนยาวมาก) — ใช้เป็น reportTitle ใน event "final" กันชื่อรายงานยาวเฟื้อย
     report_title: Optional[str] = None
+    # ค่ายผู้ให้บริการ LLM ที่ผู้ใช้เลือกสำหรับโหมด "ไม่เลือกเครื่องมือ" (gemini/chatgpt/claude)
+    # — ว่างไว้ = ใช้ค่าเริ่มต้น มีผลกับ d0 เท่านั้น (ดูเหตุผลใน llm_provider.py)
+    chat_provider: Optional[str] = None

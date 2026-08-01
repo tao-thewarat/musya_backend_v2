@@ -16,6 +16,49 @@ _FOLLOWUP_HEADER_RE = re.compile(
 _NUM_ITEM_RE = re.compile(r"^[ \t]*\d+[\.\)]\s")
 _HEADER_RE = re.compile(r"^\**\s*([^\n*]{4,40})")
 
+# หัวข้อส่วนแบบมีเลขกำกับที่ SYSTEM_PROMPT บังคับไว้ เช่น "**1. สรุปคำตอบ**"
+# ใช้จับเคส "LLM เขียนคำตอบทั้งชุดใหม่ตั้งแต่ต้น" ซึ่งฟอร์แมตนี้จะมีหัวข้อเลขเดิมโผล่ซ้ำ
+_SECTION_HEAD_RE = re.compile(r"(?m)^[ \t]*(?:#{1,4}[ \t]*)?\*{0,2}[ \t]*(\d)[\.\)][ \t]*([^\n*]{2,40})")
+
+
+def _cut_restarted_answer(text: str) -> str | None:
+    """จับเคสที่ LLM "เขียนคำตอบทั้งชุดใหม่ตั้งแต่ต้น" แล้วตัดรอบที่สองทิ้ง
+
+    ทำไมกฎเดิมจับไม่ได้: กฎหลักด้านบนอาศัยหัวข้อ "คำถามติดตาม" เป็นหมุดปิดท้ายคำตอบ
+    แต่ระบบเปลี่ยนไปใช้บล็อก <<<FOLLOWUPS>>> ซึ่งถูก _extract_and_strip_followups
+    ตัดออกไป **ก่อน** dedupe จะทำงาน หมุดนั้นจึงไม่มีอยู่จริงอีกต่อไป
+    ส่วนกฎสำรอง '---' ก็ไม่ทำงานเพราะการวนซ้ำไม่ได้คั่นด้วยเส้น
+
+    หลักการใหม่: ฟอร์แมตที่บังคับไว้มีหัวข้อ "1." เพียงครั้งเดียวต่อคำตอบ ถ้าเจอ "1."
+    ซ้ำอีกครั้ง **พร้อมกับ** หัวข้ออื่น (เช่น "2.") ซ้ำด้วย แปลว่าเป็นการเริ่มเขียนใหม่
+    ไม่ใช่การใช้เลขข้อบังเอิญ — ตัดตั้งแต่จุดเริ่มรอบสองทิ้ง
+
+    ⚠️ ตั้งใจเข้มงวด (ต้องซ้ำ ≥2 หัวข้อ) เพราะการตัดผิดหมายถึงคำตอบที่ถูกต้องหายไป
+    ซึ่งแย่กว่าปล่อยให้เห็นคำตอบซ้ำ
+    """
+    heads = list(_SECTION_HEAD_RE.finditer(text))
+    if len(heads) < 4:
+        return None
+
+    first_num = heads[0].group(1)
+    # ตำแหน่งที่หัวข้อหมายเลขเดียวกับอันแรก โผล่ซ้ำอีกรอบ
+    restarts = [m for m in heads[1:] if m.group(1) == first_num]
+    if not restarts:
+        return None
+
+    restart = restarts[0]
+    before = {m.group(1) for m in heads if m.start() < restart.start()}
+    after = {m.group(1) for m in heads if m.start() >= restart.start()}
+    # ต้องมีหัวข้ออย่างน้อย 2 หมายเลขที่ปรากฏทั้งก่อนและหลัง จึงถือว่าเป็นการเขียนซ้ำทั้งชุด
+    if len(before & after) < 2:
+        return None
+
+    kept = text[: restart.start()].rstrip()
+    # กันตัดจนเหลือคำตอบกุด — รอบแรกต้องมีเนื้อหาพอสมควรจริง ๆ
+    if len(kept) < 200:
+        return None
+    return kept
+
 
 def dedupe_repeated_answer(text: str) -> str:
     """ตัดคำตอบที่ถูกเขียนซ้ำจาก repetition loop ของ LLM.
@@ -35,6 +78,13 @@ def dedupe_repeated_answer(text: str) -> str:
     """
     if not text or len(text) < 200:
         return text
+
+    # ── Rule ใหม่: คำตอบทั้งชุดถูกเขียนใหม่ตั้งแต่หัวข้อ "1." ─────────────────
+    # ต้องมาก่อนกฎอื่น เพราะเป็นรูปแบบการวนซ้ำที่เจอจริงกับฟอร์แมต 4 ส่วนปัจจุบัน
+    # (กฎเดิมอาศัยหัวข้อ "คำถามติดตาม" ซึ่งถูกตัดออกไปก่อนแล้ว จึงไม่เคยทำงาน)
+    restarted = _cut_restarted_answer(text)
+    if restarted is not None:
+        return restarted
 
     # ── Rule หลัก: ตัดหลัง "บล็อกคำถามติดตามอันแรก" ──────────────────────────
     hdrs = list(_FOLLOWUP_HEADER_RE.finditer(text))

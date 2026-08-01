@@ -25,10 +25,59 @@ SYSTEM_PROMPT = """คุณคือผู้เชี่ยวชาญด้�
 คุณได้รับเอกสารจาก Obsidian Knowledge Vault ด้านล่าง
 ตอบคำถามโดยอ้างอิงจากเอกสารเหล่านั้นเท่านั้น
 
-**รูปแบบคำตอบ (Markdown):**
-1. **สรุปคำตอบ** — 2-3 ประโยค ตอบตรงๆ
-2. **ข้อมูลจากคลังความรู้** — ตาราง/รายการ ถ้ามีตัวเลข
-3. **บริบทและการวิเคราะห์** — 2-3 ประเด็น
+**กติกา Markdown (ต้องทำตามเป๊ะ — ระบบเรนเดอร์ตามนี้):**
+- **หัวข้อหลักทั้ง 4 ส่วน ต้องขึ้นต้นด้วย `## ` เสมอ** เช่น `## 1. สรุปคำตอบ`
+  ห้ามใช้ตัวหนา `**1. สรุปคำตอบ**` แทนหัวข้อ เพราะระบบจะมองเป็นย่อหน้าธรรมดา
+  ทำให้คำตอบดูเป็นพืดไม่มีการแบ่งส่วน
+- หัวข้อย่อยภายในส่วน ให้ใช้ `### ` (เช่น `### รายจังหวัด`) ไม่ใช่ตัวหนาลอย ๆ
+- **หัวข้อรายการ (bullet) ใช้ `- ` (ขีดกลาง + เว้นวรรค 1 ครั้ง)** ห้ามใช้ `*` และ
+  ห้ามเว้นวรรคหลายครั้ง เพราะช่องว่างส่วนเกินจะติดไปแสดงบนหน้าจอ
+- เว้นบรรทัดว่าง 1 บรรทัดก่อนเริ่มตาราง ก่อนเริ่มรายการ และก่อนขึ้นหัวข้อใหม่เสมอ
+- **1 bullet = 1 ประเด็น ยาวไม่เกิน 2-3 ประโยค** ถ้าต้องเทียบหลายจังหวัดในประเด็นเดียวกัน
+  ให้ **แตกเป็น bullet ย่อยรายจังหวัด** หรือใส่ในตาราง — ห้ามยัดทุกจังหวัดรวมกันเป็น
+  ย่อหน้ายาวก้อนเดียว เพราะผู้อ่านจับใจความไม่ได้
+
+**ตรวจก่อนเขียนทุกครั้ง:** เวลาบอกว่าค่าหนึ่ง "สูงกว่า/ต่ำกว่า" เกณฑ์ ให้เทียบตัวเลขจริง
+ก่อนเสมอ (เช่น 1.59% เทียบเกณฑ์ "ไม่เกิน 1%" คือ **สูงกว่า** เกณฑ์ ไม่ใช่ต่ำกว่า)
+และตัวเลขเดียวกันที่ปรากฏหลายที่ในคำตอบต้องตรงกันเสมอ
+
+**รูปแบบคำตอบ (Markdown) — มี 4 ส่วน เรียงตามลำดับนี้เสมอ:**
+
+## 1. สรุปคำตอบ
+ตอบคำถามตรง ๆ เป็นอย่างแรก พร้อมตัวเลขสำคัญและช่วงปีที่อ้างถึง
+ถ้าเอกสารครอบคลุมหลายจังหวัด ให้สรุปภาพรวมทั้งเขตก่อน แล้วจึงชี้จุดเด่น/จุดที่ต้องเฝ้าระวัง
+
+## 2. ข้อมูลจากคลังความรู้
+ถ้ามีตัวเลขตั้งแต่ 2 ค่าขึ้นไป ให้ทำเป็นตาราง Markdown ใช้คอลัมน์ชุดนี้:
+
+| จังหวัด | ตัวชี้วัด | ปี (พ.ศ.) | ค่าที่พบ | เป้าหมาย/เกณฑ์ |
+
+กติกาตาราง (สำคัญมาก ห้ามผิด):
+- **ทุกแถวต้องกรอกครบทุกคอลัมน์** ถ้าไม่มีข้อมูลให้ใส่ "ไม่พบข้อมูล" — ห้ามเว้นเซลล์ว่าง
+  ห้ามรวมเซลล์ และห้ามปล่อยให้ค่าของคอลัมน์หนึ่งไหลไปโผล่ในอีกคอลัมน์
+- **1 แถว = 1 ชุด (จังหวัด + ตัวชี้วัด + ปี)** ถ้ามีหลายปีให้แยกเป็นคนละแถว อย่ายัดรวมช่องเดียว
+- เรียงตามจังหวัด แล้วเรียงปีจากเก่าไปใหม่
+- ถ้าข้อมูลไม่ใช่ตัวเลข (เช่น รายชื่อโครงการ/มาตรการ) ให้ใช้รายการหัวข้อย่อยแทนตาราง
+
+## 3. บริบทและการวิเคราะห์
+ส่วนนี้คือหัวใจของคำตอบ — ต้อง **สังเคราะห์** ไม่ใช่เล่าซ้ำสิ่งที่อยู่ในตาราง
+ให้ครอบคลุมเท่าที่ข้อมูลอำนวย:
+- **เทียบข้ามจังหวัด** — จังหวัดใดดีที่สุด/แย่ที่สุด ต่างกันเท่าไร
+  ⚠️ ถ้าเอกสารที่ได้รับครอบคลุมหลายจังหวัด **ห้ามเล่าแค่จังหวัดเดียวแล้วจบ**
+- **เทียบข้ามปี** — แนวโน้มดีขึ้นหรือแย่ลง เปลี่ยนแปลงเท่าไร
+- **เทียบกับเป้าหมาย** — บรรลุหรือไม่ ห่างจากเกณฑ์เท่าไร
+- **อธิบายว่าทำไม** — เชื่อมโยงมาตรการ/โครงการ/ปัจจัยที่เอกสารระบุ เข้ากับตัวเลขที่เห็น
+
+ทุกข้อสรุปต้องมีตัวเลขจริงจากเอกสารกำกับเสมอ **ห้ามเขียนลอย ๆ** แบบ
+"มีการดำเนินงานอย่างต่อเนื่องและได้ผลเป็นที่น่าพอใจ" ซึ่งไม่ได้บอกอะไรผู้อ่านเลย
+
+## 4. ช่องว่างของข้อมูล
+ระบุตรง ๆ ว่าอะไรที่ "ตอบไม่ได้จากเอกสารชุดนี้" เช่น จังหวัดใดไม่มีข้อมูล ปีใดขาดหาย
+ตัวชี้วัดใดไม่ถูกรายงาน — เขียนเป็นหัวข้อย่อยสั้น ๆ
+ถ้าข้อมูลครบถ้วนดีแล้ว ให้ระบุว่า "ข้อมูลครอบคลุมครบตามคำถาม"
+
+**ความยาว:** ไม่มีเพดานตายตัว — ให้ยาวเท่าที่ข้อมูลมีสาระรองรับ เอกสารที่แนบมามีหลายฉบับ
+หลายจังหวัด จงใช้ให้คุ้ม อย่าตอบสั้นจนทิ้งข้อมูลที่มีอยู่ไปเปล่า ๆ แต่ก็อย่าเติมน้ำให้ยาวโดยไร้สาระ
 
 ห้ามใส่หัวข้อ "แหล่งข้อมูล" ในคำตอบ — ระบบจะแสดงแหล่งอ้างอิงให้โดยอัตโนมัติ
 
@@ -116,7 +165,13 @@ def _strip_leaked_blocks(text: str) -> str:
 # ── DB loader ──────────────────────────────────────────────────────────────────
 
 def _relevance_score(content: str, path: str, keywords: list[str]) -> int:
-    """นับจำนวนคีย์เวิร์ดจากคำถามที่ปรากฏใน note (นับใน path ด้วย × น้ำหนัก)"""
+    """นับจำนวนคีย์เวิร์ดจากคำถามที่ปรากฏใน note (นับใน path ด้วย × น้ำหนัก)
+
+    ⚠️ ใช้ได้เฉพาะเมื่อมี keywords ที่ "ตัดคำมาแล้ว" — ห้ามป้อนประโยคดิบภาษาไทย
+    เพราะภาษาไทยไม่เว้นวรรคระหว่างคำ การ split ด้วยช่องว่างจะได้ประโยคทั้งก้อนเป็น
+    คีย์เวิร์ดเดียว ซึ่งไม่มีทางปรากฏตรงตัวในเอกสารไหนเลย → ทุกโน้ตได้ 0 เท่ากันหมด
+    (ดู _extract_search_terms ที่ทำหน้าที่ตัดคำให้)
+    """
     if not keywords:
         return 0
     lc = content.lower()
@@ -124,25 +179,205 @@ def _relevance_score(content: str, path: str, keywords: list[str]) -> int:
     return sum(lc.count(k) + lp.count(k) * 5 for k in keywords)
 
 
-def _load_vault_context(
-    vault_id: str,
-    province: str | None,
-    question: str = "",
-    max_chars: int | None = None,
-) -> tuple[str, list[str], dict[str, str]]:
-    """โหลด note จาก obsidian_notes (กรองตาม province) แบบ "เลือกที่เกี่ยวข้องที่สุด
-    ให้พอดีกับเพดาน context" — กัน Gemini ContextWindowExceededError เมื่อ vault
-    โตขึ้นจากการ ingest PDF จนแม้แต่จังหวัดเดียวก็เกิน 1M tokens
+# ── Keyword screening ──────────────────────────────────────────────────────────
+# คำสามัญที่โผล่ในเอกสารราชการแทบทุกฉบับ — ถ้าปล่อยให้หลุดเข้าไปเป็นคำค้น ตัวกรอง
+# จะเลิกกรอง (วัดจริง: คำถามงบประมาณ + คำสามัญ 13 คำ → เข้าเงื่อนไข 908/1280 โน้ต = 71%)
+_STOPWORD_TERMS = {
+    "ข้อมูล", "การวิเคราะห์", "วิเคราะห์", "แนวโน้ม", "การประเมิน", "ประเมิน",
+    "รายงาน", "สถิติ", "การสำรวจ", "สำรวจ", "ผลการดำเนินงาน", "การดำเนินงาน",
+    "จังหวัด", "สาธารณสุข", "ปีงบประมาณ", "เอกสาร", "ภาพรวม", "สรุป",
+}
 
-    Returns:
-        (context_text, relative_file_paths, minio_id_map{rel_path: file_id})
+# วัดแล้วว่าจุดพอดีอยู่ที่ 5-8 คำ — น้อยกว่านี้ครอบคลุมไม่พอ มากกว่านี้ตัวกรองเริ่มไม่กรอง
+_MAX_SEARCH_TERMS = 8
+
+_KEYWORD_PROMPT = """คุณคือผู้เชี่ยวชาญคำศัพท์เอกสารราชการสาธารณสุขไทย
+จากคำถามของผู้ใช้ ให้แตกออกเป็น "คำค้น" ที่น่าจะปรากฏตรงตัวในรายงานราชการสาธารณสุข
+
+กติกาเข้ม:
+- ตอบเป็น JSON array ของสตริงล้วน ๆ เท่านั้น ห้ามมีข้อความอื่นนอกวงเล็บ
+- ให้ 5-8 คำเท่านั้น เรียงจากตรงประเด็นที่สุดไปหาน้อยที่สุด
+- ต้องเป็น **ศัพท์เฉพาะทาง** ที่เขียนในเอกสารจริง ยาว 4-20 ตัวอักษร
+- ห้ามให้คำสามัญที่โผล่ในเอกสารราชการทุกฉบับ เช่น "ข้อมูล" "รายงาน" "การวิเคราะห์"
+  "แนวโน้ม" "สาธารณสุข" "จังหวัด" "ผลการดำเนินงาน" — คำพวกนี้ทำให้ค้นเจอทุกอย่างจนไร้ประโยชน์
+- ห้ามใส่ชื่อจังหวัด (ระบบกรองจังหวัดแยกอยู่แล้ว)
+
+คำถาม: {question}"""
+
+
+def _extract_search_terms(question: str, s) -> list[str]:
+    """ให้ LLM ตัดคำถามภาษาไทยออกเป็นคำค้น 5-8 คำ (พร้อมคำพ้อง/ศัพท์เฉพาะทาง)
+
+    ทำไมต้องพึ่ง LLM: ภาษาไทยไม่เว้นวรรค การตัดคำด้วย regex ทำไม่ได้ และการยิงประโยคดิบ
+    เข้า pg_trgm/ILIKE ได้ 0 แถวเสมอ (วัดแล้ว) — LLM ยังช่วยแตกคำพ้องให้ด้วย เช่น
+    "การควบคุมโรค" → "โรคติดต่อ", "ระบาดวิทยา", "การเฝ้าระวังโรค" ทำให้ครอบคลุมกว้างขึ้นมาก
+
+    คืน [] ถ้าล้มเหลว — ผู้เรียกต้องมี fallback เสมอ (ห้ามโยน exception ออกไป
+    เพราะคำถามยังตอบได้แม้การคัดกรองจะพลาด)
     """
-    if max_chars is None:
-        max_chars = get_settings().OBSIDIAN_MAX_CONTEXT_CHARS
+    if not question.strip():
+        return []
+    import litellm  # lazy import แบบเดียวกับ _call_gemini (litellm โหลดช้า)
 
+    try:
+        resp = litellm.completion(
+            model=f"gemini/{s.GEMINI_MODEL}",
+            messages=[{"role": "user", "content": _KEYWORD_PROMPT.format(question=question)}],
+            api_key=s.GEMINI_API_KEY,
+            temperature=0.1,
+            max_tokens=300,
+        )
+        raw = resp.choices[0].message.content or ""
+    except Exception as exc:
+        logger.warning("[fullctx] สกัดคำค้นไม่สำเร็จ (%s) — จะใช้ fallback", exc)
+        return []
+
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not m:
+        logger.warning("[fullctx] คำตอบสกัดคำค้นไม่ใช่ JSON array: %r", raw[:200])
+        return []
+    try:
+        items = json.loads(m.group(0))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        logger.warning("[fullctx] คำตอบสกัดคำค้นแปลง JSON ไม่ได้: %r", m.group(0)[:200])
+        return []
+
+    terms: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        t = str(item).strip()
+        # กรองอีกชั้นแม้พรอมต์จะสั่งห้ามไปแล้ว — LLM ไม่ deterministic
+        if 4 <= len(t) <= 20 and t not in _STOPWORD_TERMS and t not in terms:
+            terms.append(t)
+    return terms[:_MAX_SEARCH_TERMS]
+
+
+# โน้ตนำทาง (INDEX / MOC — Map of Content) เป็นสารบัญลิงก์ ไม่ใช่เนื้อหาต้นทาง
+# ถ้าปล่อยให้ถูกเลือกจะกินโควตา context ทั้งที่มีแต่รายชื่อลิงก์ แล้วยังโผล่เป็น
+# บรรณานุกรม APA ให้ผู้ใช้อ่าน เช่น "MOC_5ยุทธศาสตร์" ซึ่งอ้างอิงกลับไปไม่ได้จริง
+#
+# ⚠️ ต้องเขียน %% ไม่ใช่ % — psycopg มองว่า % เป็น placeholder ของพารามิเตอร์
+# เขียน % เดี่ยวทำให้ทุกคิวรีที่ใช้ตัวกรองนี้ระเบิดด้วย "IndexError: tuple index
+# out of range" = การค้นคลังความรู้พังทั้งระบบแบบเงียบ ๆ (เจอมาแล้ว)
+_NAV_NOTE_FILTER = """
+          AND coalesce(is_index, false) = false
+          AND coalesce(note_type, '') <> 'MOC'
+          AND split_part(relative_path, '/', -1) NOT LIKE 'MOC\\_%%'
+"""
+
+
+def _search_notes(vault_id: str, province: str | None, terms: list[str]) -> list[dict]:
+    """คัดกรองโน้ตด้วย ILIKE ฝั่ง DB แล้วให้คะแนนตาม "จำนวนคำค้นที่ตรง"
+
+    ใช้ ILIKE ไม่ใช่ similarity() เพราะ pg_trgm similarity เจือจางตามความยาวเอกสาร —
+    วัดจริงกับคลังนี้: similarity() คืน 0 แถว ส่วน ILIKE เจอ 57 โน้ตครบทั้ง 5 จังหวัด
+    (มี GIN index `idx_obsidian_notes_content_trgm` บน content_stripped รองรับอยู่แล้ว)
+
+    คะแนน = จำนวนคำที่ตรงในเนื้อหา + จำนวนคำที่ตรงในชื่อเรื่อง/path × 5
+    (นับเป็น "กี่คำที่ตรง" ไม่ใช่ "ตรงกี่ครั้ง" — กันเอกสารยาวชนะเพราะพูดคำเดิมซ้ำเยอะ)
+    """
+    if not terms:
+        return []
+    pattern = "(" + "|".join(re.escape(t) for t in terms) + ")"
+    sql = """
+        SELECT relative_path, content, file_id, province,
+               length(content) AS sz,
+               (SELECT count(*) FROM unnest(%s::text[]) t
+                 WHERE coalesce(content_stripped, content) ILIKE '%%' || t || '%%') AS c_hits,
+               (SELECT count(*) FROM unnest(%s::text[]) t
+                 WHERE coalesce(title, '') || relative_path ILIKE '%%' || t || '%%') AS t_hits
+        FROM obsidian_notes
+        WHERE vault_id = %s AND coalesce(content_stripped, content) ~* %s
+    """
+    sql += _NAV_NOTE_FILTER
+    params: list = [terms, terms, vault_id, pattern]
+    if province:
+        sql += " AND province = %s"
+        params.append(province)
+
+    rows = query_db(sql, tuple(params))
+    for r in rows:
+        r["score"] = int(r["c_hits"] or 0) + int(r["t_hits"] or 0) * 5
+    rows.sort(key=lambda r: -r["score"])
+    return rows
+
+
+def _pack_by_province(rows: list[dict], max_chars: int) -> list[dict]:
+    """แพ็กโน้ตให้พอดีเพดาน โดย **แบ่งโควตาตามจังหวัด** ไม่ใช่ "ใครมาก่อนได้ก่อน"
+
+    ⚠️ นี่คือจุดที่พังมาตลอด: เดิมเรียงแล้วใส่ไปเรื่อย ๆ จนเต็ม ซึ่งเมื่อทุกโน้ตคะแนนเท่ากัน
+    (เพราะการตัดคำพัง) การเรียงจะกลายเป็นเรียงตามชื่อ path → จังหวัดที่ขึ้นต้นด้วย "ม"
+    (มุกดาหาร, 796k ตัวอักษร) กินเพดาน 500k หมดคนเดียว อีก 4 จังหวัดไม่มีวันได้เข้าเลย
+
+    โควตาถ่วงตามคะแนนรวมของแต่ละจังหวัด (จังหวัดที่มีเนื้อหาตรงกว่าได้ส่วนแบ่งมากกว่า)
+    แต่มีขั้นต่ำการันตีไว้ ไม่ให้จังหวัดที่มีผลลัพธ์ถูกเบียดจนหายไปทั้งจังหวัด
+    """
+    if not rows:
+        return []
+
+    def size(r: dict) -> int:
+        """ขนาดโน้ต — คำนวณจาก content ถ้า DB ไม่ได้ส่ง sz มา (ผู้เรียกบางทางไม่มี)"""
+        sz = r.get("sz")
+        return int(sz) if sz is not None else len(r.get("content") or "")
+
+    def score(r: dict) -> int:
+        return int(r.get("score") or 0)
+
+    by_prov: dict[str, list[dict]] = {}
+    for r in rows:
+        by_prov.setdefault(r.get("province") or "", []).append(r)
+    for lst in by_prov.values():
+        lst.sort(key=lambda r: -score(r))
+
+    provs = list(by_prov)
+    if len(provs) == 1:
+        picked, used = [], 0
+        for r in by_prov[provs[0]]:
+            if used + size(r) > max_chars and picked:
+                break
+            picked.append(r)
+            used += size(r)
+        return picked
+
+    weights = {p: sum(score(r) for r in by_prov[p]) or 1 for p in provs}
+    total_w = sum(weights.values())
+    # ขั้นต่ำ: ทุกจังหวัดที่มีผลลัพธ์ต้องได้อย่างน้อยครึ่งหนึ่งของส่วนแบ่งเท่า ๆ กัน
+    floor = max_chars // (len(provs) * 2)
+    quotas = {p: max(floor, int(max_chars * weights[p] / total_w)) for p in provs}
+
+    picked: list[dict] = []
+    used = 0
+    spent: dict[str, int] = {p: 0 for p in provs}
+    for p in sorted(provs, key=lambda p: -weights[p]):
+        for r in by_prov[p]:
+            if spent[p] + size(r) > quotas[p] or used + size(r) > max_chars:
+                continue
+            picked.append(r)
+            spent[p] += size(r)
+            used += size(r)
+
+    # รอบสอง: โควตาที่เหลือของจังหวัดที่ผลน้อย เอาไปแจกต่อตามคะแนน ไม่ปล่อยงบเหลือทิ้ง
+    if used < max_chars:
+        chosen = {id(r) for r in picked}
+        for r in rows:
+            if id(r) in chosen or used + size(r) > max_chars:
+                continue
+            picked.append(r)
+            used += size(r)
+
+    # กันเคสที่ทุกจังหวัดมีโน้ตใหญ่เกินโควตาตัวเอง จนไม่มีอะไรผ่านเลย —
+    # ต้องส่งอย่างน้อย 1 โน้ตให้ AI เสมอ ดีกว่าส่ง context ว่างเปล่า
+    if not picked:
+        picked = [max(rows, key=score)]
+
+    return picked
+
+
+def _load_all_notes(vault_id: str, province: str | None) -> list[dict]:
+    """โหลดโน้ตดิบทั้งหมด (ทางสำรองเมื่อการคัดกรองด้วยคำค้นใช้ไม่ได้)"""
     rows = query_db(
-        "SELECT relative_path, content, file_id FROM obsidian_notes "
-        "WHERE vault_id = %s AND province = %s ORDER BY relative_path",
+        "SELECT relative_path, content, file_id, province, length(content) AS sz "
+        "FROM obsidian_notes WHERE vault_id = %s AND province = %s"
+        + _NAV_NOTE_FILTER + " ORDER BY relative_path",
         (vault_id, province),
     ) if province else []
 
@@ -151,49 +386,94 @@ def _load_vault_context(
 
     if not rows:
         rows = query_db(
-            "SELECT relative_path, content, file_id FROM obsidian_notes "
-            "WHERE vault_id = %s ORDER BY relative_path",
+            "SELECT relative_path, content, file_id, province, length(content) AS sz "
+            "FROM obsidian_notes WHERE vault_id = %s"
+            + _NAV_NOTE_FILTER + " ORDER BY relative_path",
             (vault_id,),
         )
+    for r in rows:
+        r["score"] = 0
+    return rows
 
-    # คีย์เวิร์ดจากคำถาม (ตัดคำสั้น/คำทั่วไปทิ้ง) ใช้จัดอันดับความเกี่ยวข้อง
-    keywords = [w.lower() for w in re.split(r"\s+", question) if len(w) >= 3]
 
-    # ให้คะแนนแล้วเรียงจากเกี่ยวข้องมากไปน้อย — โน้ตที่ตรงคำถามจะได้เข้าก่อน
-    # ถ้าถึงเพดานตัวอักษรก่อนจะตัดโน้ตที่เหลือ (เกี่ยวข้องน้อยกว่า) ออก
-    scored = sorted(
-        rows,
-        key=lambda r: _relevance_score(r["content"] or "", r["relative_path"], keywords),
-        reverse=True,
-    )
+def _load_vault_context(
+    vault_id: str,
+    province: str | None,
+    question: str = "",
+    max_chars: int | None = None,
+    terms: list[str] | None = None,
+) -> tuple[str, list[str], dict[str, str], dict]:
+    """เลือกโน้ตที่เกี่ยวข้องกับคำถามให้พอดีเพดาน context แล้วประกอบเป็นข้อความเดียว
+
+    ทำงาน 2 ขั้น:
+      1. **คัดกรอง** — ถ้ามี `terms` (คำค้นที่ตัดคำมาแล้ว จาก _extract_search_terms)
+         จะค้นใน DB ด้วย ILIKE + ให้คะแนน · ถ้าไม่มีหรือค้นไม่เจอ ถอยไปโหลดทั้งหมด
+      2. **แพ็ก** — แบ่งโควตาตามจังหวัดถ่วงด้วยคะแนน (ดู _pack_by_province)
+
+    ⚠️ ขั้นที่ 2 ทำงาน **ทั้งสองทาง** (ทั้งทางคัดกรองและทางสำรอง) โดยตั้งใจ —
+    เพราะอาการ "เห็นแต่จังหวัดเดียว" เกิดจากการแพ็กแบบใครมาก่อนได้ก่อน ไม่ได้เกิดจาก
+    การคัดกรองอย่างเดียว ถ้าใส่โควตาเฉพาะทางคัดกรอง ทางสำรองก็จะยังพังเหมือนเดิม
+
+    Returns:
+        (context_text, relative_file_paths, minio_id_map, stats)
+        stats = {"mode", "candidates", "included", "provinces", "chars", "total_notes"}
+    """
+    if max_chars is None:
+        max_chars = get_settings().OBSIDIAN_MAX_CONTEXT_CHARS
+
+    mode = "keyword"
+    rows = _search_notes(vault_id, province, terms or [])
+    if not rows:
+        mode = "fallback" if terms else "no-terms"
+        rows = _load_all_notes(vault_id, province)
+        if terms:
+            logger.warning(
+                "[fullctx] คำค้น %s ไม่เจอโน้ตเลย — ถอยไปโหลดทั้งหมด", terms,
+            )
+
+    picked = _pack_by_province(rows, max_chars)
 
     parts: list[str] = []
     file_paths: list[str] = []
     minio_id_map: dict[str, str] = {}
+    # จังหวัดรายโน้ต — จำเป็นเมื่อผู้ใช้ไม่ระบุจังหวัด เพราะผลลัพธ์จะคละหลายจังหวัด
+    # ถ้าไม่เก็บไว้ ป้ายอ้างอิงที่โชว์ผู้ใช้จะไม่มีจังหวัดกำกับเลย (ดู run_obsidian_ask_fullcontext)
+    province_by_path: dict[str, str] = {}
     total = 0
-    included = 0
 
-    for r in scored:
+    for r in picked:
         content = (r["content"] or "").strip()
         if not content:
             continue
         rel = r["relative_path"]
         block = f"\n\n---\n## FILE: {rel}\n\n{content}"
-        if total + len(block) > max_chars and included > 0:
-            break  # เต็มเพดานแล้ว (แต่ต้องมีอย่างน้อย 1 โน้ตเสมอ)
         parts.append(block)
         file_paths.append(rel)
         if r.get("file_id"):
             minio_id_map[rel] = r["file_id"]
+        if r.get("province"):
+            province_by_path[rel] = r["province"]
         total += len(block)
-        included += 1
+
+    provinces = sorted({province_by_path[p] for p in file_paths if p in province_by_path})
+    stats = {
+        "mode": mode,
+        "candidates": len(rows),
+        "included": len(file_paths),
+        "provinces": provinces,
+        "province_by_path": province_by_path,
+        "chars": total,
+        "terms": terms or [],
+    }
 
     logger.info(
-        "[fullctx] โหลด %d/%d notes (%d chars, cap=%d, vault=%s, province=%s)",
-        included, len(rows), total, max_chars, vault_id, province,
+        "[fullctx] โหมด=%s คัดกรองได้ %d โน้ต → ส่งให้ AI %d โน้ต (%d chars, cap=%d, "
+        "จังหวัด=%s, vault=%s, province=%s, terms=%s)",
+        mode, len(rows), len(file_paths), total, max_chars,
+        ",".join(provinces) or "-", vault_id, province, terms,
     )
 
-    return "\n".join(parts), file_paths, minio_id_map
+    return "\n".join(parts), file_paths, minio_id_map, stats
 
 
 # ── Gemini call ────────────────────────────────────────────────────────────────
@@ -339,17 +619,30 @@ def run_obsidian_ask_fullcontext(
     start = time.time()
     s = get_settings()
 
+    emit_progress(request_id, "🔎 Keyword Screener", "running", "กำลังแตกคำค้นจากคำถาม...")
+    terms = _extract_search_terms(question, s)
+    emit_progress(request_id, "🔎 Keyword Screener", "done",
+                  f"คำค้น: {' · '.join(terms)}" if terms
+                  else "แตกคำค้นไม่สำเร็จ — จะคัดจากทั้งคลังแทน")
+
     emit_progress(request_id, "📂 Context Loader", "running",
                   f"กำลังโหลดเอกสาร{f' จังหวัด{province}' if province else 'ทั้ง vault'}...")
 
     try:
-        context_text, file_paths, minio_id_map = _load_vault_context(
-            vault_id, province or None, question=question
+        context_text, file_paths, minio_id_map, stats = _load_vault_context(
+            vault_id, province or None, question=question, terms=terms
         )
 
         load_elapsed = round(time.time() - start, 1)
-        emit_progress(request_id, "📂 Context Loader", "done",
-                      f"โหลด {len(file_paths)} ไฟล์ ({load_elapsed}s)", load_elapsed)
+        # ⚠️ บอกขอบเขตที่ "อ่านจริง" ให้ผู้ใช้เห็นเสมอ — คลังใหญ่กว่าเพดาน context หลายเท่า
+        # (8.4M vs 500k ตัวอักษร) ระบบจึงอ่านได้แค่บางส่วนทุกครั้ง ถ้าไม่บอก ผู้ใช้จะเข้าใจว่า
+        # คำตอบ "ไม่พบข้อมูล" แปลว่าคลังไม่มีข้อมูล ทั้งที่จริงคือยังไม่ได้อ่านส่วนนั้น
+        emit_progress(
+            request_id, "📂 Context Loader", "done",
+            f"คัดจาก {stats['candidates']} โน้ต → อ่านเต็ม {len(file_paths)} โน้ต "
+            f"({', '.join(stats['provinces']) or '-'}) ({load_elapsed}s)",
+            load_elapsed,
+        )
 
         emit_progress(request_id, "🤖 Gemini Answer Writer", "running",
                       "กำลังวิเคราะห์เอกสารและเขียนคำตอบ...")
@@ -416,7 +709,10 @@ def run_obsidian_ask_fullcontext(
             note_refs.append(ObsidianNoteRef(
                 note_id=p.replace("/", "::"),
                 title=_clean_doc_title(Path(p).stem),
-                province=province or None,
+                # จังหวัดของโน้ตตัวนั้นจริง ๆ ก่อน แล้วค่อย fallback เป็นจังหวัดที่ผู้ใช้ระบุ —
+                # เมื่อไม่ระบุจังหวัด ผลลัพธ์จะคละหลายจังหวัด การใช้ค่าระดับ request อย่างเดียว
+                # ทำให้ป้ายอ้างอิงไม่มีจังหวัดกำกับเลยทั้งที่ข้อมูลมีอยู่
+                province=stats.get("province_by_path", {}).get(p) or province or None,
                 district=None,
                 pdf_url=f"/api/pdf/view/{file_id}" if file_id else None,
             ))
@@ -433,6 +729,19 @@ def run_obsidian_ask_fullcontext(
                 "province": province or "all",
                 "files_loaded": len(file_paths),
                 "elapsed_seconds": elapsed,
+                # ── ขอบเขตที่ "อ่านจริง" — ผู้เรียกต้องเอาไปแสดงให้ผู้ใช้เห็น ──────────
+                # คลังใหญ่กว่าเพดาน context หลายเท่า (8.4M vs 500k ตัวอักษร) ระบบจึงอ่านได้
+                # แค่บางส่วนทุกครั้ง ถ้าไม่บอก ผู้ใช้จะเข้าใจว่าคำตอบ "ไม่พบข้อมูล" แปลว่า
+                # คลังไม่มีข้อมูล ทั้งที่จริงคือยังไม่ได้อ่านส่วนนั้น
+                # ⚠️ ห้ามใช้ emit_progress ส่งข้อมูลนี้ — มันเขียนลงคิวที่ผูกกับ request_id
+                # ซึ่งโหมดแชท (analyze.py) ไม่ได้ส่งมา ข้อความจึงถูกทิ้งเงียบ ๆ
+                "coverage": {
+                    "mode": stats.get("mode"),
+                    "candidates": stats.get("candidates"),
+                    "included": stats.get("included"),
+                    "provinces": stats.get("provinces", []),
+                    "terms": stats.get("terms", []),
+                },
             },
         )
 

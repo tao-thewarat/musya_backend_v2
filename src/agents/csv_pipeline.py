@@ -10,6 +10,7 @@ from crewai import Agent, Crew, LLM, Task
 from src.domains import Domain
 from src.history import append_history, get_verified_file_ids, mark_file_verified
 from src.agents.text_utils import dedupe_repeated_answer
+from src.tools.data_dict_lookup import describe_for_prompt, search_file_ids
 from src.agents.prompt_profile import (
     ANALYST_CORE_POLICY,
     CODE_GENERATOR_CORE_POLICY,
@@ -29,6 +30,18 @@ from src.tools.minio import (
     read_csv_schema_impl,
     exec_python,
 )
+
+def _search_terms(prompt: str) -> list[str]:
+    """ตัดคำถามเป็นคำค้นสำหรับหาในพจนานุกรมข้อมูล
+
+    ภาษาไทยไม่เว้นวรรค การตัดคำจริงต้องใช้ LLM ซึ่งแพงเกินไปสำหรับขั้นนี้ —
+    ใช้วิธีตรงข้าม: ส่ง "ท่อนคำ" ที่ตัดด้วยช่องว่าง/วรรคตอน ไปให้ SQL เทียบแบบ
+    LIKE สองทาง (คำค้นอยู่ใน keyword หรือ keyword อยู่ในคำค้น) ซึ่งจับคำไทย
+    ที่ติดกันได้ เช่น "ผู้สูงอายุอ้วน" จะ match keyword "อ้วน"
+    """
+    toks = [t.strip() for t in re.split(r"[\s,()\[\]/–—\-_.?]+", prompt) if len(t.strip()) >= 3]
+    return toks[:12]
+
 
 def _keyword_select(prompt: str, combined_text: str, max_n: int) -> list[str]:
     """Keyword-score CSV file lines and return top-N matches.
@@ -256,6 +269,50 @@ def _no_data_message(prompt: str, domain_name: str) -> str:
         "- หากต้องการข้อมูลหัวข้อนี้ กรุณาแจ้งผู้ดูแลระบบ (admin) หรือผู้เกี่ยวข้อง "
         "เพื่อเพิ่มชุดข้อมูลที่เกี่ยวข้องเข้าสู่ระบบ"
     )
+
+
+def _count_vault_matches(prompt: str) -> int:
+    """นับเอกสารในคลังที่ตรงคำถาม — ใช้ตัดสินว่าจะเสนอปุ่ม "ค้นคลังความรู้" ไหม
+
+    ต้องนับจริงก่อนเสนอ ไม่ใช่เสนอทุกครั้ง — ปุ่มที่กดแล้วได้ "ไม่พบข้อมูล"
+    แย่กว่าไม่มีปุ่ม เพราะผู้ใช้เสียเวลารอฟรี ๆ แล้วเชื่อถือคำแนะนำน้อยลง
+    """
+    try:
+        from src.agents.obsidian_fullcontext import _extract_search_terms, _search_notes
+        from src.config import get_settings
+        terms = _extract_search_terms(prompt, get_settings())
+        if not terms:
+            return 0
+        return len(_search_notes("health_region_10", None, terms))
+    except Exception:
+        # นับไม่ได้ = ไม่เสนอปุ่ม ดีกว่าเสนอปุ่มที่อาจกดแล้วไม่เจออะไร
+        return 0
+
+
+def _find_stats_context(prompt: str, llm) -> str:
+    """หาชื่อชุดข้อมูลสถิติที่ตรงคำถาม เพื่อแนบเป็น context ให้โหมดคุยทั่วไป
+
+    คืน "" เมื่อไม่มีอะไรตรง — ใช้ `_verify_file_relevance` ตัวเดียวกับ pipeline
+    สถิติเป็นด่านคัด จึงไม่มีทางที่โหมดคุยทั่วไปจะอ้างชุดข้อมูลคนละเรื่องมาตอบ
+
+    ⚠️ ตั้งใจคืนแค่ "รายชื่อตัวชี้วัด" ไม่ใช่ตัวเลขในไฟล์ — การรันโค้ดวิเคราะห์ CSV
+    เป็นงานของปุ่ม "ข้อมูลสถิติ" ที่มี Code Gen/Executor ครบ ถ้าทำซ้ำที่นี่จะได้
+    โหมดคุยทั่วไปที่ช้าเท่า pipeline สถิติโดยไม่ได้ประโยชน์เพิ่ม
+    """
+    try:
+        flat = list_csv_files_impl("")
+        if not flat or flat.startswith("No") or flat.startswith("Error"):
+            return ""
+        lines = _keyword_select(prompt, flat, 3)
+        if not lines:
+            return ""
+        if not _verify_file_relevance(prompt, lines, llm):
+            return ""
+        names = [re.sub(r"^\[ID:[^\]]+\]\s*", "", ln).strip() for ln in lines]
+        return "\n".join(f"- {n}" for n in names if n)
+    except Exception:
+        # โหมดคุยทั่วไปต้องตอบได้เสมอ — สถิติเป็นของแถม ไม่ใช่เงื่อนไขบังคับ
+        return ""
 
 
 def _skip_function_block(lines: list[str], start: int) -> int:
@@ -523,6 +580,7 @@ def run_pipeline(
     session_id: str = "",
     reasoning: str = "",
     vault_ctx: str = "",
+    chat_provider: str = "",
 ) -> None:
     """Run the full CSV analysis pipeline for a given domain.
 
@@ -530,6 +588,9 @@ def run_pipeline(
       d0 — general knowledge (no CSV)
       d1 — accident agent (PostgreSQL, handled by caller)
       d2–d4 — CSV pipeline: File Finder → Schema → Code Gen → Executor → Insight
+
+    chat_provider มีผลกับ d0 เท่านั้น — pipeline CSV/อุบัติเหตุยังใช้ Gemini ตามเดิม
+    เพราะพรอมป์กับ tool contract ถูกจูนกับ Gemini ไว้ สลับค่ายตรงนั้นเสี่ยงพังเปล่า ๆ
     """
     llm = _get_llm()
 
@@ -539,6 +600,25 @@ def run_pipeline(
     # ── d0: General knowledge ─────────────────────────────────────────────────
     if domain.code == "d0":
         put({"type": "agent_start", "step": "insight", "agentName": "Insight Analyst Agent"})
+
+        # ── ผู้ใช้เลือกค่าย LLM ได้เองในโหมดนี้ ──────────────────────────────
+        # ถ้าค่ายที่เลือกใช้ไม่ได้ ต้องบอกตรง ๆ ว่าเพราะอะไรและให้ทางแก้ —
+        # ห้ามเงียบ ๆ สลับไปค่ายอื่น ผู้ใช้จะไม่รู้ว่าคำตอบมาจากใคร
+        from src.agents.llm_provider import (
+            build_chat_llm, friendly_llm_error, resolve_provider, ProviderUnavailable,
+        )
+        chat_provider_obj = resolve_provider(chat_provider)
+        try:
+            llm, chat_provider_obj = build_chat_llm(chat_provider, temperature=0.3)
+        except ProviderUnavailable as exc:
+            # เคสไม่มี key แจ้งสั้น ๆ พอ — ไม่ต้องอธิบายยาว ผู้ใช้แก้เองไม่ได้อยู่แล้ว
+            warn = exc.short_message
+            put({"type": "agent_done", "step": "insight",
+                 "agentName": "Insight Analyst Agent", "result": warn})
+            put({"type": "final", "message": warn,
+                 "domain": {"code": domain.code, "nameTh": domain.name_th, "nameEn": domain.name_en}})
+            return
+
         analyst = Agent(
             role="Health Advisor",
             goal="ตอบคำถามด้านสุขภาพเป็นภาษาไทยที่เป็นทางการ สุภาพ ชัดเจน ถูกต้องตามหลักวิชาการ และเป็นประโยชน์",
@@ -552,6 +632,14 @@ def run_pipeline(
             verbose=False,
             max_iter=5,
         )
+        # ── เสริมสถิติจาก CSV ถ้าหาชุดข้อมูลที่ตรงคำถามได้ ────────────────────
+        # โหมดนี้ไม่ควรตอบลอย ๆ ทั้งที่ระบบมีข้อมูลจริง — ถ้าเจอชุดข้อมูลที่ตรง
+        # ให้แนบสรุปเข้าไปใน context ด้วย ถ้าไม่เจอก็ตอบจากความรู้ทั่วไป + vault ตามเดิม
+        stats_ctx = _find_stats_context(prompt, llm)
+        if stats_ctx:
+            put({"type": "agent_done", "step": "file_finder", "agentName": "File Finder Agent",
+                 "result": "พบชุดข้อมูลสถิติที่เกี่ยวข้อง — แนบเข้าคำตอบด้วย"})
+
         insight = _run_agent(
             analyst,
             (
@@ -561,14 +649,49 @@ def run_pipeline(
                     f"=== เอกสารที่เกี่ยวข้องจาก Obsidian Vault ===\n{vault_ctx}\n\n"
                     if vault_ctx else ""
                 )
+                + (
+                    f"=== ชุดข้อมูลสถิติที่เกี่ยวข้องในระบบ ===\n{stats_ctx}\n\n"
+                    if stats_ctx else ""
+                )
                 + "ตอบเป็นภาษาไทย กระชับ เป็นธรรมชาติ ตรงประเด็น "
                 "ไม่ต้องใส่หัวข้อ สรุปผู้บริหาร แหล่งข้อมูล หรือโครงสร้างรายงานทางการ "
                 "ตอบเหมือนผู้เชี่ยวชาญด้านสุขภาพคุยกับคนทั่วไปโดยตรง"
                 + (f"\n\nหากมีข้อมูลจาก Vault ด้านบน ให้อ้างอิงข้อมูลนั้นในคำตอบด้วย" if vault_ctx else "")
+                + (f"\n\nหากมีชุดข้อมูลสถิติด้านบน ให้บอกชื่อตัวชี้วัดที่มีในระบบ "
+                   f"และแนะให้ผู้ใช้กดปุ่ม \"ข้อมูลสถิติ\" เพื่อดูตัวเลขจริง" if stats_ctx else "")
             ),
             "คำตอบที่ชัดเจนและเป็นประโยชน์เป็นภาษาไทย",
         )
         insight = _strip_csv_extension_mentions(insight)
+
+        # ── ข้อเสนอ "ถามซ้ำด้วยเครื่องมือที่เหมาะสม" ─────────────────────────────
+        # เดิมเป็นข้อความบอกใบ้ให้ผู้ใช้ไปกดปุ่มเองแล้วพิมพ์คำถามซ้ำ ซึ่งเป็นงาน 3 ขั้น
+        # ที่ระบบทำแทนได้ทั้งหมด — ส่งเป็นข้อมูลมีโครงสร้างให้ frontend ทำเป็นปุ่มกดเดียว
+        #
+        # ⚠️ เสนอเฉพาะเมื่อ "มีของจริงให้ดึง" — นับเอกสารในคลังก่อนเสมอ ปุ่มที่กดแล้วได้
+        # "ไม่พบข้อมูล" แย่กว่าไม่มีปุ่ม เพราะผู้ใช้เสียเวลารอฟรีแล้วเลิกเชื่อคำแนะนำ
+        suggestions: list[dict] = []
+        if not vault_ctx:
+            n_vault = _count_vault_matches(prompt)
+            if n_vault > 0:
+                suggestions.append({
+                    "tool": "obsidian",
+                    "labelTh": f"ค้นคลังความรู้ ({n_vault} เอกสาร)",
+                    "hintTh": "ตอบใหม่โดยอ้างอิงเอกสารของเขตสุขภาพที่ 10 พร้อมบรรณานุกรม",
+                })
+        if stats_ctx:
+            suggestions.append({
+                "tool": "stats",
+                "labelTh": "ดูตัวเลขสถิติ",
+                "hintTh": "วิเคราะห์จากชุดข้อมูลตัวชี้วัดจริงในระบบ",
+            })
+
+        if not vault_ctx and not stats_ctx:
+            insight += (
+                f"\n\n> 💡 คำตอบนี้มาจากความรู้ทั่วไปของ **{chat_provider_obj.name_th}** "
+                f"ไม่ได้อ้างอิงเอกสารในคลังความรู้"
+            )
+
         put({"type": "agent_done", "step": "insight", "agentName": "Insight Analyst Agent", "result": insight})
         if session_id:
             append_history(session_id, "ai", insight)
@@ -576,10 +699,12 @@ def run_pipeline(
             "type": "final",
             "message": insight,
             "domain": {"code": domain.code, "nameTh": domain.name_th, "nameEn": domain.name_en},
+            "chatProvider": {"key": chat_provider_obj.key, "nameTh": chat_provider_obj.name_th},
+            "suggestedTools": suggestions,
             "agentSteps": [
                 {"step": "router",    "agentName": "Router Agent",          "result": f"{domain.code} — {domain.name_th}"},
                 {"step": "reasoning", "agentName": "Reasoning Narrator",    "result": reasoning},
-                {"step": "insight",   "agentName": "Insight Analyst Agent", "result": insight},
+                {"step": "insight",   "agentName": f"Insight Analyst ({chat_provider_obj.name_th})", "result": insight},
             ],
         })
         return
@@ -665,6 +790,16 @@ def run_pipeline(
     chosen_names = [n for n in chosen_names if n and not n.startswith("[") and len(n) > 3]
 
     selected = _resolve_folders_to_files(chosen_names, path_index, 3)
+
+    # ── เฟส 3: เสริมด้วยพจนานุกรมข้อมูล ────────────────────────────────────
+    # File Finder เดิมค้นได้เฉพาะ "ชื่อโฟลเดอร์" ⇒ ถาม "BMI" ไม่เจอไฟล์
+    # `ค่าดัชนีมวลกาย` ทั้งที่มี 6 ไฟล์ · csv_data_dict เก็บคำพ้องไว้แล้วจึงค้นเจอ
+    if not selected:
+        for fid in search_file_ids(_search_terms(prompt), domain.folder_prefix and domain.code or ""):
+            if not any(f == fid for f, _ in selected):
+                selected.append((fid, f"[ID:{fid}] (พบจากคำค้นในพจนานุกรมข้อมูล)"))
+            if len(selected) >= 3:
+                break
 
     # Fallback: folder nav failed → keyword scoring on flat listing
     if not selected:
@@ -779,6 +914,14 @@ def run_pipeline(
         )
         if schema_result.startswith("[Agent error:") and resolved_file_id:
             schema_result = read_csv_schema_impl(resolved_file_id)
+
+    # ── เฟส 2: แนบพจนานุกรมข้อมูลเข้ากับ schema ────────────────────────────
+    # schema ดิบบอกแค่ "มีคอลัมน์อะไรบ้าง" แต่ไม่บอกว่าคอลัมน์ไหนเป็นตัวตั้ง/ตัวหาร
+    # ข้อมูลครอบคลุมปีไหนจริง ๆ หรือมีข้อควรระวังอะไร — AI จึงเดาเอาเองมาตลอด
+    data_dict_text = describe_for_prompt(resolved_file_id)
+    if data_dict_text:
+        schema_result = f"{schema_result}\n\n{data_dict_text}"
+
     put({"type": "agent_done", "step": "schema", "agentName": "Schema Analyst Agent", "result": schema_result})
 
     # STEP 4: Python Code Generator
