@@ -5,7 +5,9 @@
      เพราะ "/" ในชื่อตัวชี้วัดถูกตีความเป็นตัวคั่นโฟลเดอร์
   2. ไฟล์ไปกองที่ "HDC/" แทนที่จะเข้าโดเมนจริงที่คลังใช้อยู่ (D2/D3/D4)
 """
-from src.tools.vault_placement import D2, D3, D4, OTHER, build_vault_path, classify, safe_segment
+from src.tools.vault_placement import (
+    D1, D2, D3, D4, D5, OTHER, build_vault_path, classify, safe_segment,
+)
 
 BAD = "ร้อยละของผู้ป่วย DM และ/หรือ HT ที่ได้รับการค้นหาและคัดกรองโรคไตเรื้อรัง"
 
@@ -66,3 +68,33 @@ class TestBuildVaultPath:
         folder, name = build_vault_path("ก" * 300, "สาขาไต")
         assert folder.count("/") <= 1, "ต้องถอยชั้นโฟลเดอร์เมื่อที่ไม่พอ"
         assert len(name) > 12
+
+
+class TestSingleSourceOfDomainNames:
+    """ชื่อโฟลเดอร์โดเมนต้องมาจาก domains.py ที่เดียว
+
+    เคยเป็นแหล่งความจริง 2 ที่ที่ขัดกันเอง — `domains.py` เขียน `D3_NCD`
+    แต่ `vault_placement` เขียน `D3_NCDs` (ซึ่งตรงกับคลังจริง)
+    ถ้าใครแก้ทีละที่ ไฟล์ใหม่จะไปลงคนละโฟลเดอร์กับของเดิมโดยไม่มีอะไรฟ้อง
+    """
+
+    def test_ค่าที่ใช้ตรงกับ_domains_py(self):
+        from src.domains import DOMAINS
+
+        for code, const in (("d1", D1), ("d2", D2), ("d3", D3),
+                            ("d4", D4), ("d5", D5), ("d6", OTHER)):
+            assert const == DOMAINS[code].folder_prefix, f"{code} ไม่ตรงกับ domains.py"
+
+    def test_ชื่อโฟลเดอร์ตรงกับที่มีอยู่จริงในคลัง(self):
+        """ถ้าค่าพวกนี้เพี้ยน ไฟล์ใหม่จะไม่ไปรวมกับไฟล์เดิม 300 กว่าไฟล์"""
+        assert D2 == "D2_Mental Health"
+        assert D3 == "D3_NCDs"
+        assert D5 == "D5_Population"
+        assert OTHER == "D6_Other"
+
+    def test_ทุกโดเมนที่มี_prefix_ต้องขึ้นต้นด้วยรหัสสองตัว(self):
+        """`FOLDER_PREFIX_TO_DOMAIN` ใช้ 2 ตัวแรกเป็นกุญแจ ⇒ ห้ามซ้ำกัน"""
+        from src.domains import DOMAINS
+
+        heads = [d.folder_prefix[:2] for d in DOMAINS.values() if d.folder_prefix]
+        assert len(heads) == len(set(heads)), f"รหัส 2 ตัวแรกซ้ำกัน: {heads}"

@@ -536,3 +536,39 @@ class TestNoticeHtmlClean:
     def test_บรรทัดไม่เชื่อมติดกัน(self):
         """<br> มีความหมาย — นิยามเป็นรายการข้อ ถ้าเชื่อมติดกันจะอ่านไม่รู้เรื่อง"""
         assert self._clean(self.RAW).count("\n") >= 4
+
+
+class TestIndicatorNameNotFromPath:
+    """ชื่อตัวชี้วัดต้องมาจากต้นทาง ไม่ใช่เดาจาก path
+
+    บั๊กที่เจอ 2026-08-01: `build_vault_path` ตัดชั้น "ชื่อตัวชี้วัด" ทิ้งเมื่อ path
+    ใกล้ลิมิต 150 ⇒ `build_data_dict` ที่อ่าน `parts[-2]` เลยได้ชื่อกลุ่มแทน
+    ผลจริง — ไฟล์สุขภาพจิต 28 ไฟล์ได้ indicator_th = "ผู้ป่วยสุขภาพจิต" เหมือนกันหมด
+    ทำให้ File Finder แยกไม่ออกว่าไฟล์ไหนคือตัวชี้วัดอะไร
+    """
+
+    def test_path_ที่ถูกย่อทำให้เดาชื่อผิด(self):
+        """ยืนยันว่าต้นตอของบั๊กยังอยู่ — จึงห้ามพึ่ง build_data_dict ตัวเดียว"""
+        import io
+
+        import pandas as pd
+
+        from src.tools.data_dict import build_data_dict
+
+        df = pd.DataFrame({"จังหวัด": ["มุกดาหาร"], "ปีงบประมาณ": ["2569"], "target": ["1"]})
+        buf = io.StringIO(); df.to_csv(buf, index=False)
+        # path แบบที่ถูกย่อ: <โดเมน>/<กลุ่ม>/<ไฟล์> — ไม่มีชั้นชื่อตัวชี้วัด
+        d = build_data_dict("1", "D2_Mental Health/ผู้ป่วยสุขภาพจิต/x.csv", "x.csv",
+                            buf.getvalue().encode())
+        assert d["indicator_th"] == "ผู้ป่วยสุขภาพจิต", "นี่คืออาการของบั๊ก ไม่ใช่พฤติกรรมที่ต้องการ"
+
+    def test_ตัวนำเข้าต้องเขียนทับด้วยชื่อจริงจากต้นทาง(self):
+        """กันบั๊กย้อนกลับ — `_do_import` ต้องมีบรรทัดที่ตั้ง indicator_th จาก title"""
+        import inspect
+
+        from src.routers import hdc_import
+
+        src = inspect.getsource(hdc_import._do_import)
+        assert 'd["indicator_th"] = title' in src, (
+            "ถ้าบรรทัดนี้หาย ชื่อตัวชี้วัดจะกลับไปเดาจาก path อีก"
+        )

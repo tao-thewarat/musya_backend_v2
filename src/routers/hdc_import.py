@@ -228,10 +228,25 @@ def _do_import(table: str, vault_path: str, title: str, report_url: str,
     try:
         from src.tools.data_dict import build_data_dict
         d = build_data_dict(file_id, f"{vault_path}/{name}", name, blob)
+        # ⚠️ `build_data_dict` เดาชื่อตัวชี้วัดจาก path (`parts[-2]`) ซึ่งเชื่อไม่ได้
+        # เมื่อ path ถูกย่อ: `build_vault_path` ตัดชั้น "ชื่อตัวชี้วัด" ทิ้งเมื่อความยาว
+        # ใกล้ลิมิต 150 ⇒ parts[-2] กลายเป็น "ชื่อโฟลเดอร์กลุ่ม" แทน
+        # ผลจริง: ไฟล์สุขภาพจิต 28 ไฟล์ได้ indicator_th = "ผู้ป่วยสุขภาพจิต" เหมือนกันหมด
+        # ทำให้ File Finder แยกไม่ออก และ Schema Analyst เห็นตัวชี้วัดผิดชื่อ
+        # เรารู้ชื่อจริงจากต้นทางอยู่แล้ว จึงต้องเขียนทับเสมอ ไม่ปล่อยให้เดาจาก path
+        if title:
+            d["indicator_th"] = title
         desc_map = {c["name"]: c["desc"] for c in schema if c.get("desc")}
+        from src.tools.data_dict import _role_of
+
         for col in d["columns"]:
             if desc_map.get(col["name"]):
                 col["desc"] = desc_map[col["name"]]
+                # ⚠️ ต้องคำนวณ `role` ใหม่หลังเติมคำอธิบาย
+                # `build_data_dict` เดา role จาก "ชื่อคอลัมน์" ตอนที่ยังไม่มี desc
+                # ชื่อแบบ HDC (`pop`/`target`/`result1`) เดาไม่ออก เลยกลายเป็น measure หมด
+                # แต่ desc บอกชัด เช่น "ประชากรอายุ 15 ปีขึ้นไป" ⇒ population (ห้ามเป็นตัวตั้ง)
+                col["role"] = _role_of(col["name"], col["desc"])
         # `build_data_dict` ตัดสิน unknown_cols จาก "ชื่อคอลัมน์" ก่อนที่เราจะเติมคำอธิบาย
         # ⇒ คอลัมน์อย่าง target/result1 ที่ต้นทางอธิบายไว้ครบ จะยังติดธงว่าไม่รู้จักอยู่ดี
         # ต้องล้างธงตามหลัง ไม่งั้น Schema Analyst จะเห็นเป็นคอลัมน์ปริศนาทั้งที่มีนิยามแล้ว

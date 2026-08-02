@@ -97,8 +97,10 @@ def list_csv_tree_impl(prefix: str = "") -> str:
     if not index:
         return "ไม่พบ path metadata ในระบบ — ใช้ list_csv_files แทน"
 
+    dead = _superseded_ids()
     entries = [(fid, p) for fid, p in index.items()
-               if not prefix or p.lower().startswith(prefix.lower())]
+               if fid not in dead
+               and (not prefix or p.lower().startswith(prefix.lower()))]
     if not entries:
         entries = list(index.items())  # prefix ไม่ตรงผลใดเลย → แสดงทั้งหมดแทนค่าว่าง
 
@@ -126,6 +128,48 @@ def list_csv_tree_impl(prefix: str = "") -> str:
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _superseded_ids() -> set[str]:
+    """file_id ที่ถูกแทนที่ด้วยเวอร์ชันใหม่กว่า — ต้องไม่โผล่ให้ File Finder เห็น
+
+    ตาราง HDC เดียวเคยถูกนำเข้าซ้ำถึง 4 ครั้ง (30 ตาราง → 71 ไฟล์) แต่ละครั้งได้
+    `file_id` ใหม่ ⇒ เห็นหลายเวอร์ชันแล้วเลือกแบบสุ่ม คำถามเดิมจึงได้คำตอบต่างกันทุกครั้ง
+    (เจอจริง: "ผู้ป่วยความดันควบคุมได้ดี คำชะอี" ได้ 20.54% / 6.40% / 54.75%)
+
+    อ่านไม่ได้ก็คืน set ว่าง — ยอมให้เห็นไฟล์เกินดีกว่าทำให้ค้นไม่เจออะไรเลย
+    """
+    try:
+        from src.db.pool import query_db
+        return {r["file_id"] for r in query_db(
+            "SELECT file_id FROM csv_data_dict WHERE superseded_by IS NOT NULL")}
+    except Exception as exc:
+        # ไม่มี logger ในโมดูลนี้ — ใช้ logging ตรง ๆ เพื่อไม่เพิ่ม global state
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "อ่านรายการไฟล์ที่ถูกแทนที่ไม่ได้: %s", exc)
+        return set()
+
+
+def list_csv_files_by_domain(folder_prefix: str = "") -> str:
+    """รายการไฟล์แบบ flat ที่ **กรองตามโฟลเดอร์โดเมนได้จริง**
+
+    ห้ามใช้ `list_csv_files_impl(prefix)` เพื่อกรองโดเมน — พารามิเตอร์นั้นกรองบน
+    **ชื่อ object** ซึ่งเป็นเลขล้วน (`264708`) ไม่ใช่ path ⇒ ส่ง `"D3_NCDs"` เข้าไป
+    จะได้ "No CSV files found" เสมอ แล้วผู้เรียกก็ถอยไปดึงทั้ง bucket
+    **ตัวกรองโดเมนหายไปเงียบ ๆ** โดยไม่มีอะไรฟ้อง (เสียเวลาสแกน 2 รอบด้วย)
+
+    โครงสร้างโฟลเดอร์อยู่ใน `x-amz-meta-path` เท่านั้น จึงต้องกรองจาก path index
+    """
+    index = _load_path_index()
+    if not index:
+        return ""
+    pref = (folder_prefix or "").lower()
+    dead = _superseded_ids()
+    lines = [f"[ID:{fid}] {path}" for fid, path in index.items()
+             if fid not in dead and (not pref or path.lower().startswith(pref))]
+    return "\n".join(lines)
+
 
 def list_csv_files_impl(prefix: str = "") -> str:
     global _file_map

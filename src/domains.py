@@ -30,14 +30,14 @@ DOMAINS: dict[str, Domain] = {
         code="d2",
         name_th="สุขภาพจิต",
         name_en="Mental Health",
-        folder_prefix="D2_Mental",
+        folder_prefix="D2_Mental Health",
         expertise="ผู้เชี่ยวชาญด้านสุขภาพจิต การฆ่าตัวตาย ภาวะซึมเศร้า และบริการจิตเวช",
     ),
     "d3": Domain(
         code="d3",
         name_th="โรคไม่ติดต่อ",
         name_en="NCDs",
-        folder_prefix="D3_NCD",
+        folder_prefix="D3_NCDs",
         expertise="ผู้เชี่ยวชาญด้านโรคไม่ติดต่อเรื้อรัง เช่น เบาหวาน ความดันโลหิตสูง โรคหัวใจ โรคหลอดเลือดสมอง",
     ),
     "d4": Domain(
@@ -106,8 +106,12 @@ DOMAIN_LIST_TEXT = "\n".join(
 CSV_DOMAIN_CODES: set[str] = {c for c, d in DOMAINS.items() if d.folder_prefix}
 
 # แผนที่ prefix → รหัสโดเมน สำหรับเดาโดเมนจาก path ของไฟล์ (`D3_NCDs/...` → `d3`)
-# ใช้ 2 ตัวแรกของ prefix เป็นกุญแจ เพราะชื่อโฟลเดอร์จริงยาวกว่า prefix ได้
-# (`D3_NCD` ในโค้ด แต่โฟลเดอร์จริงชื่อ `D3_NCDs`)
+# ใช้ 2 ตัวแรกของ prefix เป็นกุญแจ เผื่อชื่อโฟลเดอร์จริงยาวกว่า prefix
+#
+# ⚠️ `folder_prefix` ต้องสะกดตรงกับ **ชื่อโฟลเดอร์จริงในคลัง** เป๊ะ ๆ
+# เพราะ `vault_placement` ใช้ค่านี้ตั้งชื่อโฟลเดอร์ตอนนำเข้าไฟล์ใหม่
+# เคยเพี้ยนมาแล้ว: โค้ดเขียน `D3_NCD` แต่คลังใช้ `D3_NCDs` ⇒ กลายเป็นแหล่งความจริง
+# 2 ที่ที่ขัดกันเอง · ถ้าจะแก้ค่าตรงนี้ ต้องย้ายไฟล์ในคลังตามด้วยเสมอ
 FOLDER_PREFIX_TO_DOMAIN: dict[str, str] = {
     d.folder_prefix[:2].upper(): c for c, d in DOMAINS.items() if d.folder_prefix
 }

@@ -309,7 +309,7 @@ _KEYWORD_PROMPT_TMPL = """จากคำถาม/หัวข้อต่อ�
     "term": "คำค้นหาภาษาไทย กระชับ ไม่เกิน 5 คำ",
     "page": 1,
     "size": 8,
-    "strict": false,
+    "strict": true,
     "title": true,
     "author": false,
     "abstract": true,
@@ -361,6 +361,13 @@ def _extract_search_payload(prompt: str, gemini_key: str) -> dict:
             data.setdefault("author", False)
             data.setdefault("abstract", True)
             data["size"] = max(1, min(int(data["size"]), 10))
+            # ⚠️ บังคับ strict=True เสมอ ไม่ว่าโมเดลจะตอบอะไรมา
+            # วัดจริง 2026-08-03: `strict=false` คืน **10,000 ผลทุกคำค้น** (ชนเพดาน)
+            # = แทบไม่กรองอะไรเลย แล้ว pipeline หยิบ 5 อันแรกมา ⇒ บทความไม่ตรงหัวข้อ
+            #   "ปัจจัยเสี่ยง อุบัติเหตุ จักรยานยนต์ วัยรุ่น" → strict 8 · loose 10000
+            #   "ซึมเศร้า ผู้สูงอายุ"                        → strict 845 · loose 10000
+            # ถ้า strict แล้วได้ 0 ค่อยถอยไป loose ใน fetch_thaijo_articles
+            data["strict"] = True
             return data
     except Exception as exc:
         log_agent_error(str(exc), agent_name="Keyword Extractor",
@@ -520,16 +527,29 @@ def fetch_thaijo_articles(payload: dict) -> list[dict]:
         "abstract": payload.get("abstract", True),
     }
 
-    try:
+    def _search(body: dict) -> tuple[int, list]:
         resp = httpx.post(
-            search_url,
-            json=search_body,
-            headers=_THAIJO_API_HEADERS,
-            timeout=30,
-            follow_redirects=True,
+            search_url, json=body, headers=_THAIJO_API_HEADERS,
+            timeout=30, follow_redirects=True,
         )
         resp.raise_for_status()
-        raw_results = resp.json().get("result", [])
+        data = resp.json()
+        return int(data.get("total", 0) or 0), data.get("result", []) or []
+
+    try:
+        total, raw_results = _search(search_body)
+        # ── บันไดถอย: strict ก่อน แล้วค่อยผ่อน ─────────────────────────────
+        # `strict=false` คืน 10,000 ผลทุกคำค้น (ชนเพดาน) = แทบไม่กรองเลย
+        # จึงใช้เป็น "ทางสุดท้าย" เท่านั้น ไม่ใช่ค่าเริ่มต้น
+        # ก่อนถึงขั้นนั้น ลองตัดคำค้นให้สั้นลงก่อน — คำน้อยลงแต่ยังกรองอยู่
+        # ดีกว่าเปิดกว้างจนได้บทความคนละเรื่อง
+        if not raw_results:
+            words = term.split()
+            if len(words) > 2:
+                short = " ".join(words[:2])
+                total, raw_results = _search({**search_body, "term": short})
+        if not raw_results:
+            total, raw_results = _search({**search_body, "strict": False})
     except Exception as exc:
         log_agent_error(str(exc), agent_name="ThaiJo Fetcher",
                         step="fetcher", domain="thaijo", prompt=term)

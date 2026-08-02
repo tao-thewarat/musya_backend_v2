@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+from functools import partial
 from typing import Any
 
 # จำกัด 5 AI pipelines พร้อมกันต่อ worker (4 workers = 20 concurrent รวม)
@@ -606,8 +607,8 @@ def _orchestrate(
                     elif ev_type in self._FORWARD:
                         await queue.put(ev)
 
-            def _worker_thaijo() -> None:
-                run_thaijo_pipeline(prompt=prompt, queue=_ThaijoQ(), loop=loop)
+            def _worker_thaijo(q: str = "") -> None:
+                run_thaijo_pipeline(prompt=q or prompt, queue=_ThaijoQ(), loop=loop)
 
             # ── PubMed worker — wrapper queue forwards all steps real-time ──────
             pubmed_result: dict = {}
@@ -625,25 +626,26 @@ def _orchestrate(
                     elif ev_type in self._FORWARD:
                         await queue.put(ev)
 
-            def _worker_pubmed() -> None:
+            def _worker_pubmed(q: str = "") -> None:
                 from src.agents.pubmed_agent import run_pubmed_pipeline
-                run_pubmed_pipeline(prompt=prompt, queue=_PubmedQ(), loop=loop)
+                run_pubmed_pipeline(prompt=q or prompt, queue=_PubmedQ(), loop=loop)
 
             # ── Obsidian worker — 2 agent steps แสดง real-time ──────────────────
             obsidian_result: dict = {}
-            def _worker_obsidian() -> None:
+            def _worker_obsidian(q: str = "") -> None:
                 put({"type": "agent_start", "step": "obsidian_search",
                      "agentName": "Obsidian Knowledge Searcher"})
                 put({"type": "agent_start", "step": "obsidian_answer",
                      "agentName": "Health Knowledge Answer Writer"})
                 # ⚠️ เหตุผลเดียวกับ obsidian mode ด้านบน — ต้องตรวจจับจังหวัดเอง
                 # ไม่งั้นโหลดทั้ง vault แล้วเสี่ยงชน Gemini context window limit
-                obs = run_obsidian_ask_fullcontext(prompt, detect_province_from_prompt(prompt) or "", "health_region_10")
+                _q = q or prompt
+                obs = run_obsidian_ask_fullcontext(_q, detect_province_from_prompt(_q) or "", "health_region_10")
                 note_titles = ", ".join(n.title for n in obs.notes_referenced[:3]) if obs.notes_referenced else "ไม่พบ notes"
                 put({"type": "agent_done", "step": "obsidian_search",
                      "agentName": "Obsidian Knowledge Searcher",
                      "result": "ค้นหาข้อมูลจาก Vault สำเร็จ",
-                     "reasoning": f"ค้นหาใน vault health_region_10 ด้วยคำถาม: \"{prompt[:100]}\" — พบ notes ที่เกี่ยวข้อง: {note_titles}"})
+                     "reasoning": f"ค้นหาใน vault health_region_10 ด้วยคำถาม: \"{(q or prompt)[:100]}\" — พบ notes ที่เกี่ยวข้อง: {note_titles}"})
                 put({"type": "agent_done", "step": "obsidian_answer",
                      "agentName": "Health Knowledge Answer Writer",
                      "result": f"พบ {len(obs.notes_referenced)} notes ในคลังความรู้",
@@ -687,10 +689,10 @@ def _orchestrate(
                     elif ev_type in self._FORWARD:
                         await queue.put(ev)
 
-            def _worker_tavily() -> None:
+            def _worker_tavily(q: str = "") -> None:
                 from src.agents.tavily_pipeline import run_tavily_pipeline
                 run_tavily_pipeline(
-                    prompt=prompt, queue=_TavilyQ(), loop=loop,
+                    prompt=q or prompt, queue=_TavilyQ(), loop=loop,
                     session_id="", history_section=history_section,
                 )
 
@@ -708,7 +710,7 @@ def _orchestrate(
                         return full
                 return ""  # ทุกจังหวัดเขต 10
 
-            def _worker_stats() -> None:
+            def _worker_stats(q: str = "") -> None:
                 put({"type": "agent_start", "step": "stats_gather", "agentName": "Stats Analyst"})
 
                 # ⚠️ อุบัติเหตุทางถนน (d1) เก็บใน PostgreSQL ไม่ใช่ CSV/MinIO (ดูคอมเมนต์
@@ -723,7 +725,8 @@ def _orchestrate(
                 # เช่น "อุบัเหตุ" สะกดผิด หรือ "ความปลอดภัยทางถนน" ที่ไม่มีคำว่าอุบัติเหตุ)
                 # is_accident_question() เช็ค keyword ก่อน (เร็ว) แล้วถ้า keyword ไม่เจอ
                 # จึงให้ LLM ช่วยตัดสินใจอีกที — เหมือนที่ mode == "stats" ทำอยู่แล้ว
-                if is_accident_question(prompt, history_context):
+                _q = q or prompt
+                if is_accident_question(_q, history_context):
                     # ── เรียก SQL โดยตรง ไม่ผ่าน CrewAI/LLM ────────────────
                     # (LLM ล้มเหลวด้วย "None or empty" เมื่อ tool output รวมใหญ่เกิน)
                     from src.tools.accident_chat_sql import (
@@ -731,7 +734,7 @@ def _orchestrate(
                         _query_province_executive_summary,
                         _query_hotspot_roads,
                     )
-                    province = _extract_province_from_prompt(prompt)
+                    province = _extract_province_from_prompt(_q)
                     parts = []
                     try:
                         parts.append(_query_kpi_trend(province, 2021, 2025))
@@ -757,7 +760,7 @@ def _orchestrate(
                 # ทุกโดเมนที่มีไฟล์ CSV — ไล่ตามลำดับใน domains.py ให้ผลเรียงเหมือนกันทุกครั้ง
                 csv_domains = [_DOMAINS[c] for c in _DOMAINS if c in _CSV_DOMAIN_CODES]
                 run_multi_pipeline(
-                    prompt=prompt, queue=_StatsQ(), loop=loop,
+                    prompt=_q, queue=_StatsQ(), loop=loop,
                     domains=csv_domains, history_context=history_context,
                     history_section=history_section, session_id="",
                 )
@@ -779,12 +782,25 @@ def _orchestrate(
                 "pubmed": "งานวิจัยสากล (PubMed)",
                 "tavily": "ค้นหาเว็บ (Tavily)",
             }
+            # เก็บผลของขั้นก่อน ๆ เมื่อเครื่องมือถูกเรียกซ้ำ — ต้องมีเสมอ แม้โหมด retry
+            _extra: dict[str, list[str]] = {}
+
             _ALL_WORKERS = {
                 "obsidian": _worker_obsidian,
                 "stats": _worker_stats,
                 "thaijo": _worker_thaijo,
                 "tavily": _worker_tavily,
                 "pubmed": _worker_pubmed,
+            }
+
+            # ดูดผลของแต่ละเครื่องมือออกมาเก็บ ก่อนที่การเรียกซ้ำจะเขียนทับ
+            # (ตัวเก็บผลเป็น dict เดียวต่อเครื่องมือ — ดูคอมเมนต์ตรง _make_chain)
+            _SNAPSHOT = {
+                "obsidian": lambda: obsidian_result.get("content", ""),
+                "stats": lambda: stats_final_holder.get("msg", ""),
+                "thaijo": lambda: thaijo_result.get("full_text", ""),
+                "tavily": lambda: tavily_result_holder.get("msg", ""),
+                "pubmed": lambda: pubmed_result.get("full_text", ""),
             }
 
             # ── report-gather-retry: ปุ่ม "ลองใหม่" บน badge ที่ status=error ──────
@@ -796,12 +812,66 @@ def _orchestrate(
                     return
                 sources_to_run = [(_ALL_WORKERS[retry_source], retry_source)]
             else:
+                # ── 🧭 Research Planner — ให้ Agent วางแผนค้นเอง ────────────────
+                # เดิมยิงคำถาม "ก้อนเดียวกันเป๊ะ" ใส่ทั้ง 5 แหล่ง ⇒ ส่งประโยคไทย
+                # "จัดทำแผนปฏิบัติงาน 1 ปี ลด..." เข้า PubMed ตรง ๆ ซึ่งเป็นคำสั่ง
+                # สร้างเอกสาร ไม่ใช่คำค้นงานวิจัย · และเรียกแต่ละแหล่งได้ครั้งเดียว
+                # ทั้งที่แผนปฏิบัติงานต้องการตัวเลขหลายชุด
+                from src.agents.research_planner import plan_research
+
+                put({"type": "agent_start", "step": "research_plan",
+                     "agentName": "Research Planner"})
+                _plan = plan_research(report_title or prompt, api_key)
+
+                # แสดงแผนใน "แสดงวิธีคิด" ให้ผู้ใช้เห็นว่าจะค้นอะไรบ้าง และ
+                # **ใช้คำค้นอะไรกับเครื่องมือไหน** — เดิมผู้ใช้เห็นแค่ชื่อ agent
+                # ที่วิ่งผ่าน ไม่รู้ว่าระบบเอาคำอะไรไปค้น จึงตรวจสอบย้อนกลับไม่ได้
+                _by_tool: dict[str, int] = {}
+                for _s in _plan:
+                    _by_tool[_s["tool"]] = _by_tool.get(_s["tool"], 0) + 1
+                _plan_lines = [
+                    f"**แผนค้นข้อมูล {len(_plan)} ขั้น** "
+                    f"({' · '.join(f'{k}×{v}' for k, v in _by_tool.items())})",
+                    "",
+                ]
+                for _i, _s in enumerate(_plan, 1):
+                    _plan_lines.append(
+                        f"{_i}. **{_SOURCE_LABELS.get(_s['tool'], _s['tool'])}** "
+                        f"— {_s['purpose']}"
+                    )
+                    _plan_lines.append(f"   คำค้น: `{_s['query']}`")
+                _plan_text = chr(10).join(_plan_lines)
+                put({"type": "agent_done", "step": "research_plan",
+                     "agentName": "Research Planner", "result": _plan_text,
+                     "reasoning": _plan_text})
+                put({"type": "research_plan", "steps": _plan})
+                # `partial` ผูกคำค้นของแต่ละขั้นไว้กับ worker — เครื่องมือเดิมถูกเรียก
+                # ซ้ำได้หลายครั้งด้วยคำค้นต่างกัน ซึ่งเป็นหัวใจของการเปลี่ยนครั้งนี้
+                # ⚠️ ตัวเก็บผล (obsidian_result / stats_final_holder / ...) เป็น dict
+                # เดียวต่อเครื่องมือ ⇒ ถ้าเรียกเครื่องมือเดิมซ้ำ **ผลรอบแรกถูกเขียนทับหาย**
+                # และถ้ารันพร้อมกันยังแย่งเขียนกันอีก
+                # ⇒ จับขั้นของเครื่องมือเดียวกันมาต่อกันเป็น "สายโซ่" รันเรียงกัน
+                #    แล้วเก็บผลหลังจบแต่ละขั้น · ต่างเครื่องมือยังรันขนานกันเหมือนเดิม
+                _chains: dict[str, list[dict]] = {}
+                for _s in _plan:
+                    if _s["tool"] in _ALL_WORKERS:
+                        _chains.setdefault(_s["tool"], []).append(_s)
+
+                def _make_chain(tool: str, steps: list[dict]):
+                    def _run() -> None:
+                        for _i, st in enumerate(steps):
+                            _ALL_WORKERS[tool](st["query"])
+                            if _i < len(steps) - 1:
+                                # ดูดผลของขั้นนี้ออกมาเก็บ ก่อนขั้นถัดไปจะเขียนทับ
+                                _snap = _SNAPSHOT[tool]()
+                                if _snap:
+                                    _extra.setdefault(tool, []).append(
+                                        f"**{st['purpose']}** (ค้นด้วย: {st['query']})"
+                                        f"{chr(10)}{chr(10)}{_snap}")
+                    return _run
+
                 sources_to_run = [
-                    (_worker_obsidian, "obsidian"),
-                    (_worker_stats, "stats"),
-                    (_worker_thaijo, "thaijo"),
-                    (_worker_tavily, "tavily"),
-                    (_worker_pubmed, "pubmed"),
+                    (_make_chain(_t, _st), _t) for _t, _st in _chains.items()
                 ]
 
             for _worker_fn, _name in sources_to_run:
@@ -835,16 +905,35 @@ def _orchestrate(
 
             # ── รวมผลลัพธ์จากทั้ง 5 แหล่งเป็นรายงานเดียว ──────────────────────────
             sections = []
+
+            def _merged(tool: str, latest: str) -> str:
+                """ต่อผลของขั้นก่อน ๆ เข้ากับขั้นล่าสุดของเครื่องมือเดียวกัน
+
+                ตัวเก็บผลเป็น dict เดียวต่อเครื่องมือ ⇒ เรียกซ้ำแล้วขั้นแรกถูกเขียนทับ
+                `_make_chain` ดูดผลขั้นก่อน ๆ มาไว้ใน `_extra` ตรงนี้จึงต้องต่อกลับเข้าไป
+                ไม่งั้นรายงานจะมีเนื้อหาน้อยกว่าเวอร์ชันก่อนหน้าโดยไม่มีอะไรฟ้อง
+                """
+                prev = _extra.get(tool) or []
+                if not prev:
+                    return latest
+                sep = "\n\n"
+                return sep.join([*prev, latest])
+
             if obsidian_result.get("content"):
-                sections.append(f"## คลังความรู้สุขภาพ เขต 10\n\n{obsidian_result['content']}")
+                sections.append("## คลังความรู้สุขภาพ เขต 10\n\n"
+                                + _merged("obsidian", obsidian_result["content"]))
             if stats_final_holder.get("msg"):
-                sections.append(f"## สถิติสาธารณสุข\n\n{stats_final_holder['msg']}")
+                sections.append("## สถิติสาธารณสุข\n\n"
+                                + _merged("stats", stats_final_holder["msg"]))
             if thaijo_result.get("full_text"):
-                sections.append(f"## งานวิจัยที่เกี่ยวข้อง (ThaiJo)\n\n{thaijo_result['full_text']}")
+                sections.append("## งานวิจัยที่เกี่ยวข้อง (ThaiJo)\n\n"
+                                + _merged("thaijo", thaijo_result["full_text"]))
             if pubmed_result.get("full_text"):
-                sections.append(f"## งานวิจัยทางการแพทย์ (PubMed)\n\n{pubmed_result['full_text']}")
+                sections.append("## งานวิจัยทางการแพทย์ (PubMed)\n\n"
+                                + _merged("pubmed", pubmed_result["full_text"]))
             if tavily_result_holder.get("msg"):
-                sections.append(f"## ข้อมูลจากอินเทอร์เน็ต\n\n{tavily_result_holder['msg']}")
+                sections.append("## ข้อมูลจากอินเทอร์เน็ต\n\n"
+                                + _merged("tavily", tavily_result_holder["msg"]))
 
             combined_text = "\n\n---\n\n".join(sections) if sections else (
                 "ไม่พบข้อมูลที่เกี่ยวข้องจากแหล่งข้อมูลใดเลย (สถิติ/คลังความรู้/งานวิจัย/PubMed/เว็บ) "

@@ -10,7 +10,11 @@ from crewai import Agent, Crew, LLM, Task
 from src.domains import Domain
 from src.history import append_history, get_verified_file_ids, mark_file_verified
 from src.agents.text_utils import dedupe_repeated_answer
-from src.tools.data_dict_lookup import describe_for_prompt, search_file_ids
+from src.tools.data_dict_lookup import (
+    catalog_for_finder,
+    describe_for_prompt,
+    search_file_ids,
+)
 from src.agents.prompt_profile import (
     ANALYST_CORE_POLICY,
     CODE_GENERATOR_CORE_POLICY,
@@ -22,6 +26,7 @@ from src.tools.minio import (
     list_csv_files,
     read_csv_schema,
     execute_python_code,
+    list_csv_files_by_domain,
     list_csv_files_impl,
     list_csv_tree_impl,
     _load_path_index,
@@ -748,6 +753,10 @@ def run_pipeline(
 
     path_index = _load_path_index()
     tree_display = list_csv_tree_impl(domain.folder_prefix)
+    # สารบัญ metadata — เดิม File Finder เห็นแค่ชื่อโฟลเดอร์ตอนตัดสินใจ ส่วนตัวชี้วัด/ปี/
+    # ระดับ ถูกส่งให้หลังเลือกไฟล์ไปแล้ว ⇒ ตัวที่ต้องเลือกกลับไม่มีข้อมูลประกอบ
+    # วัดจริง 2026-08-03: ถาม "ความดัน" ได้ไฟล์เบาหวาน · ถาม "ฆ่าตัวตาย" ได้ไฟล์ทำร้ายตนเอง
+    catalog = catalog_for_finder(domain.code)
 
     finder = Agent(
         role=f"Folder Navigator Agent — {domain.name_en}",
@@ -772,10 +781,16 @@ def run_pipeline(
             f"คำถาม: {prompt}\n"
             f"Domain: {domain.name_th}\n\n"
             f"แผนผังหมวดหมู่ข้อมูล (folder tree):\n{tree_display}\n\n"
-            "ขั้นตอนบังคับ:\n"
+            + (f"{catalog}\n\n" if catalog else "")
+            + "ขั้นตอนบังคับ:\n"
             "1. ดูที่ชื่อโฟลเดอร์ระดับลึกสุด (อยู่เหนือ 📄 ไฟล์โดยตรง) — เป็นชื่อตัวชี้วัดเต็มๆ\n"
-            "2. เลือกโฟลเดอร์ที่ชื่อตรงกับหัวข้อคำถามมากที่สุด ไม่เกิน 3 ชื่อ\n"
-            "3. ตอบกลับเป็นรายการ 'ชื่อโฟลเดอร์' คัดลอกข้อความจาก tree ให้ตรงตัวอักษร บรรทัดละ 1 ชื่อ\n"
+            "2. **เทียบกับ 'รายการชุดข้อมูลที่มีจริง' ด้านบน** ซึ่งบอกชื่อตัวชี้วัดเต็ม ปีที่ครอบคลุม\n"
+            "   จำนวนจังหวัด และระดับข้อมูล — ใช้ตัดตัวเลือกที่ชื่อคล้ายกันแต่วัดคนละเรื่องออก\n"
+            "   ⚠️ ตัวอย่างที่เคยเลือกผิดจริง: ถาม 'ผู้ป่วยความดันควบคุมได้ดี' แล้วไปหยิบ\n"
+            "   'ผู้ป่วยเบาหวานที่มีความดันควบคุมได้' ซึ่งเป็นคนละประชากร ⇒ ต้องอ่านชื่อตัวชี้วัดให้ครบ\n"
+            "3. **ถ้าคำถามระบุปีหรือพื้นที่ ให้ตัดชุดข้อมูลที่ไม่ครอบคลุมปี/พื้นที่นั้นออกก่อน**\n"
+            "4. เลือกโฟลเดอร์ที่ตรงกับหัวข้อคำถามมากที่สุด ไม่เกิน 3 ชื่อ\n"
+            "5. ตอบกลับเป็นรายการ 'ชื่อโฟลเดอร์' คัดลอกข้อความจาก tree ให้ตรงตัวอักษร บรรทัดละ 1 ชื่อ\n"
             "   ห้ามตอบเป็น [ID:...] หรือชื่อไฟล์ — ตอบเฉพาะ 'ชื่อโฟลเดอร์' โค้ดจะหาไฟล์ให้เอง"
         ),
         "รายชื่อโฟลเดอร์ (≤3 ชื่อ) ที่ตรงกับหัวข้อคำถามที่สุด คัดลอกจาก tree บรรทัดละ 1 ชื่อ",
@@ -803,8 +818,11 @@ def run_pipeline(
 
     # Fallback: folder nav failed → keyword scoring on flat listing
     if not selected:
-        flat = list_csv_files_impl(domain.folder_prefix or "")
-        if not flat or flat.startswith("No") or flat.startswith("Error"):
+        # กรองตามโดเมนจาก path index — `list_csv_files_impl(prefix)` กรองบนชื่อ object
+        # ซึ่งเป็นเลขล้วน ⇒ ส่งชื่อโฟลเดอร์เข้าไปได้ "No CSV files found" เสมอ
+        # แล้วถอยไปดึงทั้ง bucket **ตัวกรองโดเมนหายไปเงียบ ๆ**
+        flat = list_csv_files_by_domain(domain.folder_prefix or "")
+        if not flat:
             flat = list_csv_files_impl("")
         for line in _keyword_select(prompt, flat, 3):
             fid = resolve_file_id(line)

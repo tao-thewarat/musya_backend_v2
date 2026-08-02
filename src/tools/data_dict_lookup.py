@@ -51,7 +51,10 @@ def search_file_ids(terms: list[str], domain: str = "", limit: int = 8) -> list[
                                     WHERE lower(k) LIKE '%%' || lower(t) || '%%'
                                        OR lower(t) LIKE '%%' || lower(k) || '%%')) AS hits
             FROM csv_data_dict
-            WHERE TRUE
+            -- ข้ามไฟล์ที่ถูกแทนที่ด้วยเวอร์ชันใหม่กว่า (ดู migration 036)
+            -- ตาราง HDC เดียวเคยถูกนำเข้าซ้ำถึง 4 ครั้ง ⇒ File Finder เห็นหลายเวอร์ชัน
+            -- แล้วเลือกแบบสุ่ม ทำให้คำถามเดิมได้คำตอบต่างกันทุกครั้ง
+            WHERE superseded_by IS NULL
         """
         params: list = [terms]
         if domain:
@@ -64,6 +67,62 @@ def search_file_ids(terms: list[str], domain: str = "", limit: int = 8) -> list[
     except Exception as exc:
         logger.warning("ค้น csv_data_dict ไม่ได้: %s", exc)
         return []
+
+
+def catalog_for_finder(domain: str = "", limit: int = 120) -> str:
+    """สารบัญ metadata แบบย่อ สำหรับให้ File Finder เลือกไฟล์
+
+    **ทำไมต้องมี:** เดิม File Finder เห็นแค่ "ชื่อโฟลเดอร์" ตอนตัดสินใจ
+    ส่วน metadata (ตัวชี้วัด · ปี · จังหวัด · ระดับ · คำเตือน) ถูกส่งให้ *หลังจาก*
+    เลือกไฟล์ไปแล้ว ⇒ ตัวที่ต้องตัดสินใจกลับเป็นตัวที่ไม่มีข้อมูลประกอบเลย
+
+    อธิบายความผิดพลาดที่วัดได้จริง 2026-08-03 ทั้ง 3 เคส:
+      - ถาม "ผู้ป่วยความดันควบคุมได้ดี" → หยิบไฟล์ **เบาหวาน**
+      - ถาม "อัตราฆ่าตัวตายสำเร็จ"      → หยิบไฟล์ **ทำร้ายตนเองเข้าถึงบริการ**
+      - ถาม "ผู้ป่วยซึมเศร้าเข้าถึงบริการ" → หยิบไฟล์ **SMI-V**
+    ทั้งสามเคส `indicator_th` ในพจนานุกรมบอกไว้ถูกต้องอยู่แล้ว แค่ไม่ถูกส่งไปให้ดู
+
+    เขียนให้สั้นที่สุดที่ยังตัดสินใจได้ เพราะต้องใส่ทั้งโดเมนลงใน 1 พรอมต์
+    """
+    try:
+        from src.db.pool import query_db
+        sql = """
+            SELECT file_id, indicator_th, year_min, year_max, granularity,
+                   array_length(provinces, 1) AS n_prov,
+                   array_length(caveats, 1)   AS n_cav,
+                   vault_path
+            FROM csv_data_dict
+            WHERE superseded_by IS NULL
+        """
+        params: list = []
+        if domain:
+            sql += " AND domain = %s"
+            params.append(domain)
+        sql += " ORDER BY indicator_th LIMIT %s"
+        params.append(limit)
+        rows = query_db(sql, tuple(params))
+    except Exception as exc:
+        logger.warning("อ่านสารบัญพจนานุกรมไม่ได้: %s", exc)
+        return ""
+
+    if not rows:
+        return ""
+
+    out = ["รายการชุดข้อมูลที่มีจริง (เลือกได้เฉพาะ ID ที่อยู่ในรายการนี้):"]
+    for r in rows:
+        bits = []
+        if r["year_min"]:
+            bits.append(f"ปี {r['year_min']}-{r['year_max']}")
+        if r["n_prov"]:
+            bits.append(f"{r['n_prov']} จว.")
+        if r["granularity"]:
+            bits.append(f"ระดับ{r['granularity']}")
+        if r["n_cav"]:
+            # ติดธงไว้ให้เห็นตั้งแต่ตอนเลือก จะได้เลี่ยงไฟล์ที่มีกับดักถ้ามีตัวเลือกอื่น
+            bits.append(f"⚠️{r['n_cav']}")
+        name = (r["indicator_th"] or r["vault_path"] or "").strip()[:90]
+        out.append(f"[ID:{r['file_id']}] {name} ({' · '.join(bits)})")
+    return "\n".join(out)
 
 
 def describe_for_prompt(file_id: str) -> str:
@@ -129,6 +188,53 @@ def describe_for_prompt(file_id: str) -> str:
         for c in described[:16]:
             desc = f" — {c['desc']}" if c.get("desc") else ""
             lines.append(f"  · {c['name']} = {ROLE_TH.get(c['role'], c['role'])}{desc}")
+
+    # ── กฎการเลือกคอลัมน์ ────────────────────────────────────────────────
+    # เจอจริง 2026-08-03: ถาม "ผู้ป่วยความดันควบคุมได้ดี" แล้ว AI หยิบคอลัมน์
+    # `ได้รับการตรวจวัดความดัน` (role=measure) มาเป็นตัวตั้งแทน `ควบคุมได้ตามเกณฑ์`
+    # (role=numerator) ⇒ ตอบ 95.27% แทนที่จะเป็น 52.87% แล้วยังชมว่า "สูงกว่าเป้าหมาย"
+    # ตัวเลขจริงทุกตัว แต่**หยิบผิดคอลัมน์** — พจนานุกรมรู้ถูกอยู่แล้วแต่ไม่ได้บอกเป็นกฎ
+    pct = [c["name"] for c in cols if c.get("role") == "percentage"]
+    if pct:
+        lines.append(
+            "⚠️ ไฟล์นี้**มีคอลัมน์ร้อยละคำนวณไว้ให้แล้ว**: " + ", ".join(pct[:8])
+        )
+        lines.append(
+            "   ⇒ ถ้าคำถามถามหาร้อยละ **ให้อ่านค่าจากคอลัมน์นี้ตรง ๆ ห้ามหารเอง**"
+        )
+
+    # ── จับคู่ A/B กับชื่อคอลัมน์จริง ────────────────────────────────────
+    # เดิมบอกแค่ "ตัวตั้ง (A) = จำนวนผู้ป่วยที่ได้รับการวินิจฉัยและรักษา" (นิยาม)
+    # แต่ **ไม่บอกว่า A คือคอลัมน์ไหน** ⇒ AI ต้องเดาเอง และเดาผิด
+    # เจอจริง 2026-08-03: เดาว่า A = `pop` (ประชากร) แทน `result1` ⇒ ได้ 3703%
+    num = [c["name"] for c in cols if c.get("role") == "numerator"]
+    den = [c["name"] for c in cols if c.get("role") == "denominator"]
+    if num and den:
+        lines.append(
+            f"✅ **สูตรที่ต้องใช้: ({num[0]}) ÷ ({den[0]}) × 100** "
+            f"— ตัวตั้งคือ `{num[0]}` ตัวหารคือ `{den[0]}` ห้ามใช้คอลัมน์อื่นแทน"
+        )
+
+    pops = [c["name"] for c in cols if c.get("role") == "population"]
+    if pops:
+        lines.append(
+            "🚫 คอลัมน์ต่อไปนี้เป็น **ฐานประชากร ไม่ใช่จำนวนผู้ป่วย** "
+            "ห้ามใช้เป็นตัวตั้งหรือตัวหารของร้อยละเด็ดขาด: " + ", ".join(pops[:8])
+        )
+        lines.append(
+            "   (ใช้ผิดแล้วร้อยละจะพุ่งเกิน 100 ซึ่งเป็นไปไม่ได้ — เคยได้ 3703% มาแล้ว)"
+        )
+
+    measures = [c["name"] for c in cols if c.get("role") == "measure"]
+    if measures:
+        # ต้องบอกชื่อออกมาให้ครบ เดิมกรองทิ้งตั้งแต่ต้น AI จึงไม่รู้ว่าห้ามใช้
+        lines.append(
+            "⚠️ คอลัมน์ต่อไปนี้เป็น **ค่าวัดกลางทาง ห้ามใช้เป็นตัวตั้งของร้อยละ**: "
+            + ", ".join(measures[:12])
+        )
+        lines.append(
+            "   (เช่น 'ได้รับการตรวจ...' คือจำนวนคนที่*ถูกตรวจ* ไม่ใช่คนที่*ผ่านเกณฑ์*)"
+        )
 
     basis = d.get("counting_basis")
     if basis:

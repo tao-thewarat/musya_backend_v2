@@ -43,21 +43,48 @@ def _pick(cols: list[str], wanted: set[str]) -> str:
     return ""
 
 
-def _role_of(col: str) -> str:
-    """เดา "บทบาท" ของคอลัมน์จากรูปแบบการตั้งชื่อที่ใช้กันใน HDC
+# คอลัมน์ที่เป็น "ฐานประชากร" ไม่ใช่จำนวนผู้ป่วย — ห้ามใช้เป็นตัวตั้งของร้อยละเด็ดขาด
+# เจอจริง 2026-08-03: AI เอา `pop` (ประชากร 15 ปีขึ้นไป 1.2 ล้านคน) มาเป็นตัวตั้ง
+# หารด้วย `target` (ผู้ป่วยคาดประมาณ 32,938) ⇒ ได้ 3703% แล้วยังตอบออกไป
+_POP_DESC = re.compile(r"ประชากร|population|ทะเบียนราษฎร|ความชุก|prevalence", re.I)
+_DENOM_DESC = re.compile(r"คาดประมาณ|เป้าหมาย|ทั้งหมดที่ขึ้นทะเบียน|กลุ่มเป้าหมาย", re.I)
+_NUMER_DESC = re.compile(
+    r"ได้รับการวินิจฉัยและรักษา|ที่ผ่านเกณฑ์|ควบคุมได้|เข้าถึงบริการ|ผ่านเกณฑ์", re.I)
 
-    B = ตัวหาร (ฐานประชากรเป้าหมาย) · A = ตัวตั้ง (ผู้ผ่านเกณฑ์)
-    ยืนยันจากคู่ที่เขียนกำกับไว้ชัด เช่น `ประชากร_B` + `คัดกรองแล้ว_A` + `รวม_%`
+
+def _role_of(col: str, desc: str = "") -> str:
+    """เดา "บทบาท" ของคอลัมน์ — ดู **คำอธิบาย** ก่อน แล้วค่อยดูชื่อ
+
+    ทำไมต้องดู `desc` ก่อน: ไฟล์ HDC 274 ไฟล์ตั้งชื่อคอลัมน์แบบ `pop` / `target` /
+    `result1` ซึ่ง heuristic จากชื่อจับไม่ได้เลย ⇒ ถูกจัดเป็น `measure` ทั้งหมด
+    พอกฎ "ห้ามใช้ measure เป็นตัวตั้ง" ห้ามทุกคอลัมน์พร้อมกัน **ก็เท่ากับไม่ได้ห้ามอะไร**
+    แต่ `desc` จากต้นทางบอกไว้ชัดว่าคอลัมน์ไหนคืออะไร เช่น
+      pop     → "ประชากรอายุ 15 ปีขึ้นไปในปีที่ใช้คำนวณ"        ⇒ population
+      target  → "จำนวนผู้ป่วยคาดประมาณจากความชุก"              ⇒ denominator
+      result1 → "จำนวนผู้ป่วยสะสมทั้งหมดที่ได้รับการวินิจฉัยและรักษา" ⇒ numerator
+
+    บทบาท `population` แยกจาก `measure` เพราะเป็นตัวเลขใหญ่ที่ทำให้ร้อยละพุ่งเกิน 100
+    ถ้าเผลอใช้ผิด — ต้องเตือนแรงกว่าคอลัมน์ค่าวัดทั่วไป
     """
-    c = str(col)
+    c, d = str(col), str(desc or "")
     if re.search(r"ร้อยละ|%|percent|rate|อัตรา", c, re.I):
         return "percentage"
+    if _norm(c) in {_norm(x) for x in (_PROV_COLS | _DIST_COLS | _YEAR_COLS)}:
+        return "key"
+    # ชื่อที่กำกับ A/B ชัดเจน (ไฟล์อัปโหลด) เชื่อได้กว่าคำอธิบาย
     if re.search(r"(^|[_ (])B\d?([_ )]|$)", c):
         return "denominator"
     if re.search(r"(^|[_ (])A\d?([_ )]|$)", c):
         return "numerator"
-    if _norm(c) in {_norm(x) for x in (_PROV_COLS | _DIST_COLS | _YEAR_COLS)}:
-        return "key"
+    if d:
+        # เรียงจากเจาะจงไปกว้าง — "ผู้ป่วยคาดประมาณจากความชุก" มีทั้ง "คาดประมาณ"
+        # และ "ความชุก" ต้องให้ denominator ชนะ population
+        if _DENOM_DESC.search(d):
+            return "denominator"
+        if _NUMER_DESC.search(d):
+            return "numerator"
+        if _POP_DESC.search(d):
+            return "population"
     return "measure"
 
 
