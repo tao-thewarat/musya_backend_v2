@@ -21,6 +21,7 @@ from src.config import get_settings
 from src.history import get_history, append_history, build_history_context
 from src.schemas.analyze import AnalyzeRequest
 from src.tools.vault_rag import detect_province_from_prompt, read_vault_context, get_vault_summary
+from src.domains import CSV_DOMAIN_CODES as _CSV_DOMAIN_CODES
 from src.domains import DOMAINS as _DOMAINS
 
 
@@ -313,7 +314,7 @@ def _orchestrate(
             # หัวข้อ (แทน keyword-correction แบบเดิมที่กันได้เฉพาะเคสมี keyword ตรง ๆ)
             from src.agents.router import route_stats_domains
             csv_domains, is_multi, route_reasoning = route_stats_domains(prompt, history_context)
-            csv_domains = [d for d in csv_domains if d.code in ("d2", "d3", "d4")]
+            csv_domains = [d for d in csv_domains if d.code in _CSV_DOMAIN_CODES]
 
             # ── router บอกว่า "ไม่เข้าพวก" ต้องแจ้งตรง ๆ ห้ามเดาเป็น d3 ────────────
             # ⚠️ เดิมเขียน `or [_DOMAINS["d3"]]` ทำให้คำว่า "ไม่รู้" ถูกกลืนเป็น "NCD"
@@ -711,7 +712,6 @@ def _orchestrate(
                 put({"type": "agent_start", "step": "stats_gather", "agentName": "Stats Analyst"})
 
                 # ⚠️ อุบัติเหตุทางถนน (d1) เก็บใน PostgreSQL ไม่ใช่ CSV/MinIO (ดูคอมเมนต์
-                # _CSV_DOMAIN_CODES ใน router.py: "d1=PostgreSQL") — ต้อง redirect ไปยัง
                 # accident pipeline เหมือนที่ mode == "stats" ทำไว้แล้ว (ดูบรรทัด ~109)
                 # ไม่อย่างนั้น run_multi_pipeline จะถูกบังคับให้ค้นเฉพาะใน d2/d3/d4
                 # (ไม่มีข้อมูลอุบัติเหตุอยู่เลยสักไฟล์) แล้วสุ่มเลือก CSV ผิด domain มาแทน
@@ -754,7 +754,8 @@ def _orchestrate(
                              "result": "ไม่สามารถดึงข้อมูลสถิติได้ในขณะนี้"})
                     return
 
-                csv_domains = [_DOMAINS["d2"], _DOMAINS["d3"], _DOMAINS["d4"]]
+                # ทุกโดเมนที่มีไฟล์ CSV — ไล่ตามลำดับใน domains.py ให้ผลเรียงเหมือนกันทุกครั้ง
+                csv_domains = [_DOMAINS[c] for c in _DOMAINS if c in _CSV_DOMAIN_CODES]
                 run_multi_pipeline(
                     prompt=prompt, queue=_StatsQ(), loop=loop,
                     domains=csv_domains, history_context=history_context,
@@ -944,7 +945,7 @@ def _orchestrate(
         # CSV pipeline เป็นของปุ่ม "ข้อมูลสถิติ" โดยเฉพาะ (mode == "stats" ซึ่ง return
         # ไปตั้งแต่ด้านบนแล้ว) โหมดนี้จึงเหลือแค่ 2 ปลายทาง: คลังความรู้ หรือ AI ทั่วไป
         # ส่วนชื่อตัวชี้วัดสถิติที่เกี่ยวข้องยังถูกแนบเข้าคำตอบผ่าน _find_stats_context()
-        if domain.code in ("d2", "d3", "d4"):
+        if domain.code in _CSV_DOMAIN_CODES:
             domain = domains[0] = _DOMAINS["d0"]
             is_multi = False
 

@@ -47,6 +47,26 @@ DOMAINS: dict[str, Domain] = {
         folder_prefix="D4_Nutrition",
         expertise="ผู้เชี่ยวชาญด้านโภชนาการ ภาวะทุพโภชนาการ โรคอ้วน และความมั่นคงทางอาหาร",
     ),
+    "d5": Domain(
+        code="d5",
+        name_th="ประชากร",
+        name_en="Population",
+        folder_prefix="D5_Population",
+        expertise=(
+            "ผู้เชี่ยวชาญด้านโครงสร้างประชากร จำนวนประชากรรายอำเภอ/ตำบล "
+            "แยกตามเพศและช่วงอายุ ใช้เป็นฐานประชากร (ตัวหาร) ในการคำนวณอัตราต่อประชากร"
+        ),
+    ),
+    "d6": Domain(
+        code="d6",
+        name_th="อื่น ๆ",
+        name_en="Other",
+        folder_prefix="D6_Other",
+        expertise=(
+            "ข้อมูลสุขภาพที่ยังไม่เข้าโดเมนใดโดยเฉพาะ — ใช้เมื่อคำถามไม่ตรงกับ "
+            "โดเมนอื่นแต่ยังเป็นเรื่องสุขภาพในเขตสุขภาพที่ 10"
+        ),
+    ),
     "dt": Domain(
         code="dt",
         name_th="วิจัย ThaiJo",
@@ -74,3 +94,20 @@ DOMAIN_LIST_TEXT = "\n".join(
     f"- {d.code}: {d.name_th} ({d.name_en})"
     for d in DOMAINS.values()
 )
+
+# ── โดเมนที่มีไฟล์ CSV ให้ค้น ────────────────────────────────────────────────
+#
+# คำนวณจาก `folder_prefix` แทนการเขียนรายชื่อไว้เอง — เดิมมีรายชื่อ {"d2","d3","d4"}
+# กระจายอยู่ 4 ที่ (router / analyze × 3) พอเพิ่มโดเมนใหม่แล้วลืมแก้ที่ใดที่หนึ่ง
+# ผลคือไฟล์อยู่ในคลังจริงแต่ AI ค้นไม่เจอ **โดยไม่มีอะไรฟ้อง**
+# (เจอมาแล้วกับโฟลเดอร์ D5_Other 43 ไฟล์ ที่ไม่มีโดเมนไหนรับผิดชอบ)
+#
+# d0/dt/obsidian ไม่มี prefix โดยตั้งใจ — ไม่ได้อ่านจาก CSV
+CSV_DOMAIN_CODES: set[str] = {c for c, d in DOMAINS.items() if d.folder_prefix}
+
+# แผนที่ prefix → รหัสโดเมน สำหรับเดาโดเมนจาก path ของไฟล์ (`D3_NCDs/...` → `d3`)
+# ใช้ 2 ตัวแรกของ prefix เป็นกุญแจ เพราะชื่อโฟลเดอร์จริงยาวกว่า prefix ได้
+# (`D3_NCD` ในโค้ด แต่โฟลเดอร์จริงชื่อ `D3_NCDs`)
+FOLDER_PREFIX_TO_DOMAIN: dict[str, str] = {
+    d.folder_prefix[:2].upper(): c for c, d in DOMAINS.items() if d.folder_prefix
+}

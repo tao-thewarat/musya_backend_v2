@@ -1,13 +1,14 @@
-﻿"""Router Agent — classifies user questions into health domains d0–d4, dt, obsidian."""
+﻿"""Router Agent — classifies user questions into health domains d0–d6, dt, obsidian."""
 import os
 import re
 
 from crewai import Agent, Crew, LLM, Task
 
-from src.domains import Domain, DOMAINS, DOMAIN_LIST_TEXT
+from src.domains import CSV_DOMAIN_CODES, Domain, DOMAINS, DOMAIN_LIST_TEXT
 
-# Domains that have CSV files in MinIO (d2–d4 only; d0=general, d1=PostgreSQL)
-_CSV_DOMAIN_CODES = {"d2", "d3", "d4"}
+# โดเมนที่มีไฟล์ CSV ให้ค้น — คำนวณจาก `folder_prefix` ใน domains.py ที่เดียว
+# (เดิมเขียนรายชื่อไว้ตรงนี้ แล้วเพิ่มโดเมนใหม่ทีต้องไล่แก้หลายไฟล์)
+_CSV_DOMAIN_CODES = CSV_DOMAIN_CODES
 
 # ── ThaiJo keyword detection ──────────────────────────────────────────────────
 
@@ -118,6 +119,12 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
     "d2": ["สุขภาพจิต", "ฆ่าตัวตาย", "ซึมเศร้า", "จิตเวช", "mental"],
     "d3": ["ncd", "เบาหวาน", "ความดัน", "หัวใจ", "หลอดเลือด", "โรคไม่ติดต่อ", "ncds"],
     "d4": ["โภชนาการ", "อ้วน", "bmi", "วัยเรียน", "วัยทำงาน", "ภาวะโภชนาการ", "น้ำหนัก", "nutrition"],
+    "d5": ["ประชากร", "จำนวนประชากร", "ปิรามิดประชากร", "โครงสร้างประชากร",
+           "ผู้สูงอายุกี่คน", "ประชากรกลางปี", "ทะเบียนราษฎร", "รายอายุ",
+           "ช่วงอายุ", "ฐานประชากร", "ต่อแสนประชากร", "ความหนาแน่นประชากร"],
+    # d6 ไม่มี keyword โดยตั้งใจ — เป็นที่รองรับของที่ยังไม่เข้าโดเมนไหน
+    # ถ้าใส่ keyword กว้าง ๆ มันจะแย่งคำถามจากโดเมนที่เจาะจงกว่า
+    "d6": [],
 }
 
 

@@ -191,13 +191,35 @@ class TestNormalModeNeverHitsCsvPipeline:
     โหมดไม่เลือกเครื่องมือต้องเหลือแค่ 2 ปลายทาง: คลังความรู้ หรือ AI ทั่วไป (d0)
     """
 
-    def test_โหมดปกติต้องไม่เหลือ_d2_d3_d4(self):
-        import re
+    def test_โหมดปกติต้องดันโดเมนที่มี_csv_กลับเป็น_d0(self):
         from pathlib import Path
         src = Path("src/routers/analyze.py").read_text(encoding="utf-8")
-        # ต้องมีการดัน d2-d4 กลับเป็น d0 ก่อนเข้า pipeline
-        assert re.search(r'domain\.code in \("d2", "d3", "d4"\)', src), \
+        # ต้องมีการดันโดเมนที่มีไฟล์ CSV กลับเป็น d0 ก่อนเข้า pipeline
+        # (เดิมเขียนรายชื่อ d2/d3/d4 ตรง ๆ — เปลี่ยนมาใช้ชุดที่คำนวณจาก
+        #  folder_prefix เพื่อให้เพิ่มโดเมนใหม่แล้วไม่ต้องไล่แก้หลายที่)
+        assert "if domain.code in _CSV_DOMAIN_CODES:" in src, \
             "หายไปแล้วหรือ — ถ้าไม่มี normal mode จะตกลง CSV pipeline อีก"
+
+    def test_ชุดโดเมน_csv_ต้องมาจาก_folder_prefix_ที่เดียว(self):
+        """กันไม่ให้ใครเขียนรายชื่อโดเมนซ้ำอีก
+
+        รายชื่อ {"d2","d3","d4"} เคยกระจายอยู่ 4 ที่ พอเพิ่มโดเมนใหม่แล้วลืมแก้
+        ที่ใดที่หนึ่ง ผลคือไฟล์อยู่ในคลังจริงแต่ AI ค้นไม่เจอโดยไม่มีอะไรฟ้อง
+        (โฟลเดอร์ D5_Other 43 ไฟล์เคยลอยอยู่แบบนั้น)
+        """
+        from pathlib import Path
+        from src.domains import CSV_DOMAIN_CODES, DOMAINS
+
+        assert CSV_DOMAIN_CODES == {c for c, d in DOMAINS.items() if d.folder_prefix}
+        # d0 / dt / obsidian ไม่ได้อ่านจาก CSV จึงต้องไม่อยู่ในชุดนี้
+        assert not CSV_DOMAIN_CODES & {"d0", "dt", "obsidian"}
+
+        for path in ("src/routers/analyze.py", "src/agents/router.py", "src/tools/data_dict.py"):
+            code = "\n".join(
+                ln for ln in Path(path).read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith("#")
+            )
+            assert '"d2", "d3", "d4"' not in code, f"{path} กลับไปเขียนรายชื่อโดเมนเองแล้ว"
 
     def test_โหมดสถิติต้องไม่เดา_d3_เมื่อ_router_บอกว่าไม่เข้าพวก(self):
         from pathlib import Path

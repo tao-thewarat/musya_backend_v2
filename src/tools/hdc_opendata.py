@@ -102,7 +102,7 @@ def lookup_by_report_id(report_id: str) -> dict:
         return {}
     return {
         "table": d["source_table"],
-        "title_th": (d.get("report_name") or "").strip(),
+        "title_th": clean_title(d.get("report_name") or ""),
         "category": (d.get("category_name") or "").strip(),
         "report_id": report_id,
     }
@@ -185,7 +185,7 @@ def list_subcatalog(cat_id: str) -> list[dict]:
         oid = r.get("opendata_id") or ""
         out[tbl] = {
             "table": tbl,
-            "title_th": (r.get("report_name") or "").strip(),
+            "title_th": clean_title(r.get("report_name") or ""),
             "category": (r.get("category_name") or "").strip(),
             "report_id": oid,
             "report_url": (
@@ -198,6 +198,39 @@ def list_subcatalog(cat_id: str) -> list[dict]:
 
 # API ของ HDC เอง (คนละตัวกับ opendata) — หน้า standard-report-detail ใช้ตัวนี้
 HDC_API = "https://api-center-hdc.moph.go.th/v1"
+
+
+def clean_html(v: str) -> str:
+    """ล้าง HTML จากข้อความของ HDC — ใช้ได้ทั้งชื่อตัวชี้วัดและหมายเหตุ
+
+    `<br>` คือตัวแบ่งบรรทัดที่มีความหมาย ห้ามลบทิ้งเฉย ๆ เพราะนิยามเป็นรายการ
+    ข้อ 1/2/3/4 ถ้าเชื่อมติดกันจะอ่านไม่รู้เรื่อง
+
+    ⚠️ ห้ามใช้ `<[^>]+>` ลบแท็ก — หมายเหตุของ HDC เต็มไปด้วยเครื่องหมาย
+    น้อยกว่า/มากกว่าที่เป็น **เกณฑ์จริง** เช่น
+
+        - ปกติ (Risk = 0) หมายถึง ระดับน้ำตาล >=70 ถึง < 100 mg%
+        - เสี่ยง (Risk = 1) หมายถึง ระดับน้ำตาล => 100 ถึง < 126 mg%
+
+    pattern นั้นจะจับตั้งแต่ `< 100 mg% … =` (ไปจบที่ `>` ของ `=>` บรรทัดถัดไป)
+    แล้วลบทิ้งทั้งก้อน ⇒ **บรรทัด "เสี่ยง" หายไปทั้งบรรทัด**
+
+    จึงบังคับว่าตัวถัดจาก `<` ต้องเป็นตัวอักษรหรือ `/` เท่านั้นถึงจะนับเป็นแท็ก
+    """
+    s = re.sub(r"<br\s*/?>", "\n", v or "", flags=re.I)
+    s = re.sub(r"</?[A-Za-z][^<>]*>", "", s)
+    s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<")
+    return re.sub(r"\n{3,}", "\n\n", s).strip()
+
+
+def clean_title(v: str) -> str:
+    """ล้าง HTML แล้วยุบเป็นบรรทัดเดียว — สำหรับชื่อที่จะกลายเป็นชื่อโฟลเดอร์
+
+    ต้นทางใส่ `<font color=red>` ในชื่อรายงานเพื่อเน้นคำ ถ้าไม่ล้างจะได้โฟลเดอร์ชื่อ
+    `ประชากร<font color=red>ทะเบียนราษฏร์< font> ย้อนหลัง 3 ปี` ซึ่งอ่านไม่รู้เรื่อง
+    และทำให้ AI จับคู่ชื่อโฟลเดอร์กับคำถามไม่ได้ (เจอจริง 2 ส.ค. 2569)
+    """
+    return re.sub(r"\s+", " ", clean_html(v)).strip()
 
 
 def get_report_notice(report_code: str, byear: str = "") -> dict:
@@ -281,7 +314,7 @@ def get_report_info(report_code: str, cat_id: str = "") -> dict:
     if not isinstance(r, dict):
         return {}
     return {
-        "title_th": (r.get("report_name") or "").strip(),
+        "title_th": clean_title(r.get("report_name") or ""),
         "table": (r.get("source_table") or "").strip(),
         "category": (r.get("category_main_name") or "").strip(),
         "hdc_years": [str(y) for y in (r.get("byear_list") or [])],

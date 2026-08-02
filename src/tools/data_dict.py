@@ -16,6 +16,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.domains import FOLDER_PREFIX_TO_DOMAIN
+
 # ── ชื่อคอลัมน์ที่ใช้เป็นแกน — ต้องตรงกับ multi_csv_pipeline ─────────────────
 _PROV_COLS = {"จังหวัด", "province", "Province"}
 _DIST_COLS = {"อำเภอ", "district", "District", "a_name", "sub-province", "subprovince"}
@@ -176,7 +178,7 @@ def build_data_dict(file_id: str, vault_path: str, file_name: str, raw: bytes) -
     cols = [str(c) for c in df.columns]
 
     parts = vault_path.split("/")
-    domain = {"D2": "d2", "D3": "d3", "D4": "d4"}.get(parts[0][:2].upper(), "")
+    domain = FOLDER_PREFIX_TO_DOMAIN.get(parts[0][:2].upper(), "")
     indicator = parts[-2] if len(parts) > 2 else file_name.rsplit(".", 1)[0]
 
     key_prov = _pick(cols, _PROV_COLS)
