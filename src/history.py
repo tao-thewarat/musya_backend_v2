@@ -48,6 +48,37 @@ def append_history(session_id: str, role: str, text: str) -> None:
         logger.warning("Redis unavailable — history not saved")
 
 
+def get_json_cache(key: str) -> dict[str, Any] | None:
+    """Read a JSON object from Redis, failing open on cache errors."""
+    if not key:
+        return None
+    try:
+        raw = _get_redis().get(key)
+        if not raw:
+            return None
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except Exception:
+        logger.warning("Redis unavailable or cache value invalid — treating as cache miss")
+        return None
+
+
+def set_json_cache(key: str, value: dict[str, Any], ttl_seconds: int) -> bool:
+    """Store a JSON object in Redis with TTL, failing open on cache errors."""
+    if not key or ttl_seconds <= 0:
+        return False
+    try:
+        _get_redis().set(
+            key,
+            json.dumps(value, ensure_ascii=False),
+            ex=ttl_seconds,
+        )
+        return True
+    except Exception:
+        logger.warning("Redis unavailable — cache value not saved")
+        return False
+
+
 def build_history_context(history: list[dict[str, Any]]) -> str:
     if not history:
         return ""

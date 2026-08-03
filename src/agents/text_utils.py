@@ -6,7 +6,16 @@ Gemini (โดยเฉพาะตอนโดน context ยาว/ใกล�
 ที่ผู้ใช้เห็น "เบิ้ล" กันหลายอัน dedupe ตรงนี้ตัดส่วนที่วนซ้ำทิ้งแบบระมัดระวัง
 (เก็บคำตอบรอบแรกที่สมบูรณ์ไว้เสมอ ไม่ตัดเนื้อหาที่ถูกต้อง)
 """
+import hashlib
+import json
+import logging
+import os
 import re
+import unicodedata
+from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 # หัวข้อ "คำถามติดตาม" ที่เป็น "หัวข้อจริง" (ขึ้นต้นบรรทัด, มี #/​** นำหน้าได้)
 # — ไม่ใช่คำว่า "คำถามติดตาม" ที่โผล่กลางประโยค (in-prose)
@@ -19,6 +28,139 @@ _HEADER_RE = re.compile(r"^\**\s*([^\n*]{4,40})")
 # หัวข้อส่วนแบบมีเลขกำกับที่ SYSTEM_PROMPT บังคับไว้ เช่น "**1. สรุปคำตอบ**"
 # ใช้จับเคส "LLM เขียนคำตอบทั้งชุดใหม่ตั้งแต่ต้น" ซึ่งฟอร์แมตนี้จะมีหัวข้อเลขเดิมโผล่ซ้ำ
 _SECTION_HEAD_RE = re.compile(r"(?m)^[ \t]*(?:#{1,4}[ \t]*)?\*{0,2}[ \t]*(\d)[\.\)][ \t]*([^\n*]{2,40})")
+
+_TAVILY_CACHE_SPEC_SYSTEM = """คุณทำหน้าที่สร้าง semantic cache identity สำหรับคำถามค้นเว็บ
+ห้ามตอบคำถามผู้ใช้ ให้แปลงความหมายของคำถามเป็น JSON เท่านั้น
+
+คำถามที่ความหมายและขอบเขตเดียวกัน แม้สลับคำหรือใช้คำพ้อง ต้องได้ค่าเดียวกัน เช่น
+- "นโยบายการควบคุมโรคพยาธิใบไม้ตับ จังหวัดศรีสะเกษ"
+- "ศรีสะเกษมีแนวทางจัดการปัญหาพยาธิใบไม้ตับอย่างไร"
+ต้องได้ intent=policy, topic=โรคพยาธิใบไม้ตับ, locations=[ศรีสะเกษ]
+
+กฎ:
+- intent ใช้ได้เฉพาะ policy, statistics, definition, comparison, recommendation, other
+- topic เป็นชื่อหัวข้อมาตรฐานภาษาไทยแบบสั้น ตัดคำขอ/คำสุภาพออก และรวมคำพ้องให้เป็นคำเดียวกัน
+- locations เก็บจังหวัด/อำเภอ/ประเทศที่ผู้ใช้ระบุจริงเท่านั้น ห้ามเดาสถานที่ที่ไม่ได้ระบุ
+- years เก็บปีที่ระบุจริงเป็นตัวเลขตามที่ผู้ใช้เขียน ห้ามแปลง พ.ศ. เป็น ค.ศ.
+- population เก็บกลุ่มประชากรที่ระบุ หรือ null
+- qualifiers เก็บเงื่อนไขสำคัญอื่นที่ทำให้ขอบเขตคำตอบต่างกัน เรียงตามตัวอักษร
+- latest=true เฉพาะเมื่อขอข้อมูลล่าสุด/ปัจจุบัน
+- cacheable=false เมื่อคำถามกำกวมมากจนระบุ topic ไม่ได้
+- confidence เป็นค่าระหว่าง 0 ถึง 1
+- ห้ามใส่ Markdown หรือข้อความอื่นนอก JSON
+
+รูปแบบ:
+{"cacheable":true,"confidence":0.95,"intent":"policy","topic":"โรคพยาธิใบไม้ตับ","locations":["ศรีสะเกษ"],"years":[],"population":null,"qualifiers":[],"latest":false}
+"""
+
+_CACHE_INTENTS = {
+    "policy", "statistics", "definition", "comparison", "recommendation", "other",
+}
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Parse a JSON object even when an LLM accidentally adds a code fence."""
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        data = json.loads(cleaned)
+    except (TypeError, json.JSONDecodeError):
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def _normalize_cache_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    return " ".join(text.casefold().split())
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    unique = {_normalize_cache_text(item) for item in value}
+    return sorted(item for item in unique if item)
+
+
+def build_tavily_cache_spec(
+    prompt: str,
+    gemini_key: str = "",
+    *,
+    min_confidence: float = 0.8,
+) -> dict[str, Any] | None:
+    """Use Gemini to create a stable semantic identity for a Tavily query.
+
+    Returns ``None`` when the prompt is empty, Gemini is unavailable, or the
+    model is not confident enough. Callers should bypass cache in those cases.
+    """
+    prompt = prompt.strip()
+    api_key = gemini_key or os.getenv("GEMINI_API_KEY", "")
+    if not prompt or not api_key:
+        return None
+
+    try:
+        import litellm  # Lazy import keeps this shared text module lightweight.
+
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        if not model.startswith("gemini/"):
+            model = f"gemini/{model}"
+        response = litellm.completion(
+            model=model,
+            api_key=api_key,
+            messages=[
+                {"role": "system", "content": _TAVILY_CACHE_SPEC_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=500,
+        )
+        raw = response.choices[0].message.content or ""
+        data = _extract_json_object(raw)
+        if not data or data.get("cacheable") is not True:
+            return None
+
+        confidence = float(data.get("confidence", 0))
+        topic = _normalize_cache_text(data.get("topic"))
+        if confidence < min_confidence or not topic:
+            return None
+
+        intent = _normalize_cache_text(data.get("intent"))
+        if intent not in _CACHE_INTENTS:
+            intent = "other"
+
+        years: list[int] = []
+        if isinstance(data.get("years"), list):
+            for year in data["years"]:
+                try:
+                    years.append(int(year))
+                except (TypeError, ValueError):
+                    continue
+
+        return {
+            "intent": intent,
+            "topic": topic,
+            "locations": _normalize_string_list(data.get("locations")),
+            "years": sorted(set(years)),
+            "population": _normalize_cache_text(data.get("population")) or None,
+            "qualifiers": _normalize_string_list(data.get("qualifiers")),
+            "latest": data.get("latest") is True,
+        }
+    except Exception as exc:
+        logger.warning("Unable to build Tavily cache spec: %s", exc)
+        return None
+
+
+def make_tavily_cache_key(spec: dict[str, Any], version: str = "v1") -> str:
+    """Build a deterministic Redis key from a normalized Tavily cache spec."""
+    payload = json.dumps(spec, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"cache:tavily:semantic:{version}:{digest}"
 
 
 def _cut_restarted_answer(text: str) -> str | None:

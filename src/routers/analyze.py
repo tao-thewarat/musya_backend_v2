@@ -376,7 +376,7 @@ def _orchestrate(
             run_tavily_pipeline(
                 prompt=prompt, queue=queue, loop=loop,
                 session_id=session_id, history_section=history_section,
-                reasoning=reasoning,
+                reasoning=reasoning, use_cache=True,
             )
             return
 

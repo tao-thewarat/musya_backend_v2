@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     TAVILY_MAX_RESULTS: int = 10
     TAVILY_CONTENT_CHARS: int = 1200  # เนื้อหาต่อ 1 ผลลัพธ์ที่ส่งให้ Answer Writer
     TAVILY_COUNTRY: str = "thailand"  # boost ผลลัพธ์จากไทย (ว่าง = ไม่เจาะจงประเทศ)
+    TAVILY_CACHE_TTL_SECONDS: int = 1800  # semantic search cache: 30 minutes
 
     # Tavily Research API (async research task → poll → report + sources)
     TAVILY_RESEARCH_MODEL: str = "mini"          # mini | pro | auto

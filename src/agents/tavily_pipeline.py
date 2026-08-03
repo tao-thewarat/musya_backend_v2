@@ -13,7 +13,8 @@ from typing import Any
 from crewai import Agent, Crew, LLM, Task, Process
 
 from src.config import get_settings
-from src.history import append_history
+from src.history import append_history, get_json_cache, set_json_cache
+from src.agents.text_utils import build_tavily_cache_spec, make_tavily_cache_key
 from src.tools.tavily_search import tavily_search
 
 
@@ -109,14 +110,39 @@ def run_tavily_pipeline(
     session_id: str = "",
     history_section: str = "",
     reasoning: str = "",
+    use_cache: bool = False,
 ) -> None:
     """Run the Tavily search pipeline and emit SSE events."""
     llm = _get_llm()
+    settings = get_settings()
 
     def put(ev: dict[str, Any]) -> None:
         asyncio.run_coroutine_threadsafe(queue.put(ev), loop)
 
     start = time.time()
+
+    cache_spec: dict[str, Any] | None = None
+    cache_key = ""
+    raw_data = ""
+    cache_hit = False
+    if use_cache:
+        cache_spec = build_tavily_cache_spec(prompt, settings.GEMINI_API_KEY)
+        if cache_spec:
+            cache_identity = {
+                "semantic": cache_spec,
+                "search": {
+                    "depth": "basic",
+                    "max_results": settings.TAVILY_MAX_RESULTS,
+                    "content_chars": settings.TAVILY_CONTENT_CHARS,
+                },
+            }
+            cache_key = make_tavily_cache_key(cache_identity)
+            cached = get_json_cache(cache_key)
+            if cached:
+                cached_raw = cached.get("raw_data")
+                if isinstance(cached_raw, str) and cached_raw.strip():
+                    raw_data = cached_raw
+                    cache_hit = True
 
     # STEP 1: Search Agent
     put({"type": "agent_start", "step": "search", "agentName": "Tavily Search Agent"})
@@ -147,63 +173,105 @@ def run_tavily_pipeline(
         max_iter=3,
     )
 
-    search_task = Task(
-        description=(
-            _search_agent_prompt() + "\n\n"
-            f"{history_section}"
-            f"**คำถาม:** {prompt}\n\n"
-            f"เรียก tavily_search 1 ครั้ง แล้วส่งต่อรายงานและแหล่งอ้างอิงทั้งหมดที่ได้ ห้ามค้นหาซ้ำ"
-        ),
-        expected_output="รายงานเชิงลึกจาก Tavily Research พร้อมแหล่งอ้างอิง (URL) ครบถ้วน",
-        agent=search_agent,
-    )
-
-    answer_task = Task(
-        description=(
-            ANSWER_WRITER_PROMPT + "\n\n"
-            f"**คำถามผู้ใช้:** {prompt}\n\n"
-            f"เขียนคำตอบโดยใช้ข้อมูลจาก Search Agent เท่านั้น "
-            f"สังเคราะห์จากรายงานและทุกแหล่งอ้างอิงให้ครบถ้วน อย่าตอบสั้นจนตกข้อมูลสำคัญ"
-        ),
-        expected_output=(
-            "คำตอบภาษาไทย Markdown ที่มีเนื้อหาแน่น: สรุปคำตอบ + bullet list ตัวเลข/สถิติ"
-            " ทุกตัวที่พบ (คำต่อคำ ไม่พารากราฟทิ้ง) + รายละเอียดที่สังเคราะห์จากทุกแหล่ง"
-            " (มีหัวข้อย่อย/ตารางเมื่อเหมาะสม และดึงตัวเลขกลับมาใส่ในย่อหน้าด้วย) + แหล่งอ้างอิงครบ"
-        ),
-        agent=answer_agent,
-        context=[search_task],
-    )
-
-    crew = Crew(
-        agents=[search_agent, answer_agent],
-        tasks=[search_task, answer_task],
-        process=Process.sequential,
-        verbose=True,
-    )
-
     try:
-        result = crew.kickoff()
-        elapsed = round(time.time() - start, 1)
+        if cache_hit:
+            put({
+                "type": "agent_done",
+                "step": "search",
+                "agentName": "Tavily Search Agent",
+                "result": raw_data,
+                "cacheHit": True,
+            })
+            put({"type": "agent_start", "step": "insight", "agentName": "Tavily Answer Writer"})
+            answer_task = Task(
+                description=(
+                    ANSWER_WRITER_PROMPT + "\n\n"
+                    f"**คำถามผู้ใช้:** {prompt}\n\n"
+                    "**ข้อมูลจากผลค้นหา Tavily ที่ cache ไว้:**\n"
+                    f"{raw_data}\n\n"
+                    "เขียนคำตอบโดยใช้ข้อมูล cache ข้างต้นเท่านั้น และใช้ทุกแหล่งอ้างอิงให้ครบถ้วน"
+                ),
+                expected_output=(
+                    "คำตอบภาษาไทย Markdown ที่มีสรุป ตัวเลข/สถิติ รายละเอียด "
+                    "และแหล่งอ้างอิงครบถ้วน"
+                ),
+                agent=answer_agent,
+            )
+            crew = Crew(
+                agents=[answer_agent], tasks=[answer_task],
+                process=Process.sequential, verbose=True,
+            )
+            result = crew.kickoff()
+            tasks_output = getattr(result, "tasks_output", [])
+            answer = (
+                getattr(tasks_output[-1], "raw", None) or str(tasks_output[-1])
+                if tasks_output else str(result)
+            )
+        else:
+            search_task = Task(
+                description=(
+                    _search_agent_prompt() + "\n\n"
+                    f"{history_section}"
+                    f"**คำถาม:** {prompt}\n\n"
+                    "เรียก tavily_search 1 ครั้ง แล้วส่งต่อรายงานและแหล่งอ้างอิงทั้งหมดที่ได้ ห้ามค้นหาซ้ำ"
+                ),
+                expected_output="รายงานเชิงลึกจาก Tavily Research พร้อมแหล่งอ้างอิง (URL) ครบถ้วน",
+                agent=search_agent,
+            )
+            answer_task = Task(
+                description=(
+                    ANSWER_WRITER_PROMPT + "\n\n"
+                    f"**คำถามผู้ใช้:** {prompt}\n\n"
+                    "เขียนคำตอบโดยใช้ข้อมูลจาก Search Agent เท่านั้น "
+                    "สังเคราะห์จากรายงานและทุกแหล่งอ้างอิงให้ครบถ้วน อย่าตอบสั้นจนตกข้อมูลสำคัญ"
+                ),
+                expected_output=(
+                    "คำตอบภาษาไทย Markdown ที่มีเนื้อหาแน่น: สรุปคำตอบ + bullet list ตัวเลข/สถิติ"
+                    " ทุกตัวที่พบ (คำต่อคำ ไม่พารากราฟทิ้ง) + รายละเอียดที่สังเคราะห์จากทุกแหล่ง"
+                    " (มีหัวข้อย่อย/ตารางเมื่อเหมาะสม และดึงตัวเลขกลับมาใส่ในย่อหน้าด้วย) + แหล่งอ้างอิงครบ"
+                ),
+                agent=answer_agent,
+                context=[search_task],
+            )
+            crew = Crew(
+                agents=[search_agent, answer_agent],
+                tasks=[search_task, answer_task],
+                process=Process.sequential,
+                verbose=True,
+            )
+            result = crew.kickoff()
+            tasks_output = getattr(result, "tasks_output", [])
+            answer = str(result)
+            if tasks_output:
+                answer = getattr(tasks_output[-1], "raw", None) or str(tasks_output[-1])
+            if len(tasks_output) >= 2:
+                raw_data = getattr(tasks_output[0], "raw", None) or str(tasks_output[0])
 
-        tasks_output = getattr(result, "tasks_output", [])
-        answer = str(result)
-        raw_data = ""
-        if tasks_output:
-            answer = getattr(tasks_output[-1], "raw", None) or str(tasks_output[-1])
-        if len(tasks_output) >= 2:
-            raw_data = getattr(tasks_output[0], "raw", None) or str(tasks_output[0])
+            if cache_key and cache_spec and _URL_RE.search(raw_data):
+                set_json_cache(
+                    cache_key,
+                    {
+                        "spec": cache_spec,
+                        "raw_data": raw_data,
+                        "created_at": int(time.time()),
+                    },
+                    settings.TAVILY_CACHE_TTL_SECONDS,
+                )
+
+        elapsed = round(time.time() - start, 1)
 
         # เติมแหล่งอ้างอิงที่ Answer Writer ตกหล่นให้ครบทุก URL ที่ค้นเจอ
         answer = _ensure_all_sources(answer, raw_data)
 
-        put({
-            "type": "agent_done",
-            "step": "search",
-            "agentName": "Tavily Search Agent",
-            "result": raw_data or "(ค้นหาเสร็จ)",
-        })
-
-        put({"type": "agent_start", "step": "insight", "agentName": "Tavily Answer Writer"})
+        if not cache_hit:
+            put({
+                "type": "agent_done",
+                "step": "search",
+                "agentName": "Tavily Search Agent",
+                "result": raw_data or "(ค้นหาเสร็จ)",
+                "cacheHit": False,
+            })
+            put({"type": "agent_start", "step": "insight", "agentName": "Tavily Answer Writer"})
         put({
             "type": "agent_done",
             "step": "insight",
@@ -217,6 +285,7 @@ def run_tavily_pipeline(
         put({
             "type": "final",
             "message": answer,
+            "cacheHit": cache_hit,
             "domain": {"code": "tavily", "nameTh": "ค้นหาทั่วไป", "nameEn": "Web Search"},
             "agentSteps": [
                 {"step": "reasoning", "agentName": "Reasoning Narrator",   "result": reasoning},
