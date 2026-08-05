@@ -99,10 +99,45 @@ _BASE_RULES = """กฎบังคับการเขียน HTML:
 
 _HEAD_SCRIPT = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
 
+# ── กฎการตั้งชื่อเอกสาร ───────────────────────────────────────────────────────
+# ปัญหาที่ผู้ใช้รายงาน 2026-08-06: เลือก "นโยบาย" แต่ได้ชื่อว่า
+#   "สรุปรายงานนโยบาย — จัดทำแผนปฏิบัติงาน 1 ปี ลดอุบัติเหตุ..."
+# ซึ่งขัดกันเอง เพราะพรอมต์เดิมยัด `— {query}` (คำสั่งที่ผู้ใช้พิมพ์) ลงในชื่อตรง ๆ
+#
+# คำถามของผู้ใช้เป็น "คำสั่งให้ทำงาน" ไม่ใช่ "ชื่อเอกสาร" — เอกสารราชการจริง
+# ไม่มีฉบับไหนชื่อขึ้นต้นว่า "จัดทำ..." ⇒ ต้องให้ AI ตั้งชื่อใหม่ตามชนิดเอกสาร
+_TITLE_RULES = {
+    "policy": """กฎการตั้งชื่อเอกสาร (สำคัญมาก):
+- ตั้งชื่อแบบ **ข้อเสนอเชิงนโยบาย** ไม่ใช่ชื่อโครงการหรือแผนปฏิบัติงาน
+- ห้ามลอกประโยคคำสั่งของผู้ใช้มาเป็นชื่อ ห้ามขึ้นต้นด้วย "จัดทำ" "เขียน" "ขอ"
+- ห้ามมีคำว่า "แผนปฏิบัติงาน" หรือ "แผนยุทธศาสตร์" อยู่ในชื่อ
+- เน้นประเด็นนโยบายและข้อเสนอ เช่น
+  "ข้อเสนอเชิงนโยบายเพื่อลดการบาดเจ็บจากรถจักรยานยนต์ในเยาวชน จังหวัดอุบลราชธานี"
+  "มาตรการเชิงนโยบายด้านความปลอดภัยทางถนนสำหรับกลุ่มเยาวชน เขตสุขภาพที่ 10\"""",
+    "plan": """กฎการตั้งชื่อเอกสาร (สำคัญมาก):
+- ตั้งชื่อแบบ **แผนยุทธศาสตร์** ที่สื่อถึงทิศทางระยะยาวและวิสัยทัศน์
+- ห้ามลอกประโยคคำสั่งของผู้ใช้มาเป็นชื่อ ห้ามขึ้นต้นด้วย "จัดทำ" "เขียน"
+- ห้ามมีคำว่า "แผนปฏิบัติงาน 1 ปี" — ยุทธศาสตร์เป็นระยะยาว ไม่ใช่รายปี
+- ระบุช่วงเวลาแบบหลายปี เช่น
+  "แผนยุทธศาสตร์ความปลอดภัยทางถนนสำหรับเยาวชน จังหวัดอุบลราชธานี พ.ศ. 2568–2572"
+  "ยุทธศาสตร์การลดการบาดเจ็บจากรถจักรยานยนต์ในกลุ่มวัยรุ่น ระยะ 5 ปี\"""",
+    "workplan": """กฎการตั้งชื่อเอกสาร (สำคัญมาก):
+- ตั้งชื่อแบบ **แผนปฏิบัติงาน/โครงการ** ที่สื่อถึงการลงมือทำในช่วงเวลาที่ระบุ
+- ห้ามลอกประโยคคำสั่งของผู้ใช้มาเป็นชื่อ ห้ามขึ้นต้นด้วย "จัดทำ" "เขียน"
+- ระบุปีงบประมาณให้ชัด เช่น
+  "แผนปฏิบัติงานลดอุบัติเหตุรถจักรยานยนต์ในเยาวชน จังหวัดอุบลราชธานี ปีงบประมาณ 2568"
+  "โครงการเสริมสร้างความปลอดภัยทางถนนสำหรับเยาวชน ปีงบประมาณ 2568\"""",
+}
+
+
+def title_rule(doc_type: str) -> str:
+    return _TITLE_RULES.get(doc_type, _TITLE_RULES["policy"])
+
 
 # ── 1. Policy Brief — การขอนโยบาย ────────────────────────────────────────────
 
 def build_policy_prompt(query: str, plan: str, articles_text: str, article_count: int) -> str:
+    _TITLE_RULE = _TITLE_RULES["policy"]
     return f"""คุณคือนักวิชาการด้านนโยบายสาธารณสุขไทย เขียน Policy Brief ฉบับสมบูรณ์ระดับ WHO/สธ. อย่างน้อย 10 หน้า A4
 
 หัวข้อ: {query}
@@ -114,11 +149,13 @@ def build_policy_prompt(query: str, plan: str, articles_text: str, article_count
 
 {_BASE_RULES}
 
+{_TITLE_RULE}
+
 โครงสร้าง Policy Brief (CRITICAL — ต้องสร้าง 10 <div class="page"> แยกกัน):
 
 หน้า 1 — ปกและบทสรุปผู้บริหาร:
   <span class="tag-research">Policy Brief</span>
-  <h2 class="article-title"> ชื่อ Policy Brief ภาษาไทย
+  <h2 class="article-title"> [ชื่อข้อเสนอเชิงนโยบาย — ดูกฎการตั้งชื่อท้ายพรอมต์]
   <p class="authors"> ผู้จัดทำ / หน่วยงาน
   <hr class="divider">
   <div class="exec-box"> <p class="exec-label">บทสรุปผู้บริหาร</p> + 4-5 ประโยคสรุปสถานการณ์ ปัญหา ข้อเสนอ
@@ -177,6 +214,7 @@ CSS ใส่ใน <style>:
 # ── 2. Strategic Plan — การเขียนแผน ──────────────────────────────────────────
 
 def build_plan_prompt(query: str, plan: str, articles_text: str, article_count: int) -> str:
+    _TITLE_RULE = _TITLE_RULES["plan"]
     return f"""คุณคือนักวางแผนยุทธศาสตร์สาธารณสุขไทย เขียนแผนยุทธศาสตร์ฉบับสมบูรณ์ระดับกระทรวง/กรม อย่างน้อย 10 หน้า A4
 
 หัวข้อ: {query}
@@ -188,11 +226,13 @@ def build_plan_prompt(query: str, plan: str, articles_text: str, article_count: 
 
 {_BASE_RULES}
 
+{_TITLE_RULE}
+
 โครงสร้าง Strategic Plan (CRITICAL — ต้องสร้าง 10 <div class="page"> แยกกัน):
 
 หน้า 1 — ปกและบทนำ:
   <span class="tag-research">แผนยุทธศาสตร์</span>
-  <h2 class="article-title"> ชื่อแผนยุทธศาสตร์
+  <h2 class="article-title"> [ชื่อแผนยุทธศาสตร์ — ดูกฎการตั้งชื่อท้ายพรอมต์]
   <p class="authors"> หน่วยงานที่รับผิดชอบ / ระยะเวลา
   <hr class="divider">
   <div class="exec-box"> บทสรุปแผนยุทธศาสตร์ (วิสัยทัศน์ พันธกิจ เป้าหมายหลัก)
@@ -252,6 +292,7 @@ CSS ใส่ใน <style>:
 # ── 3. Work Plan — การวางแผนงาน ──────────────────────────────────────────────
 
 def build_workplan_prompt(query: str, plan: str, articles_text: str, article_count: int) -> str:
+    _TITLE_RULE = _TITLE_RULES["workplan"]
     return f"""คุณคือผู้จัดการโครงการสาธารณสุขไทย เขียนแผนงาน/โครงการฉบับสมบูรณ์ระดับสสจ./รพ. อย่างน้อย 10 หน้า A4
 
 หัวข้อ: {query}
@@ -263,11 +304,13 @@ def build_workplan_prompt(query: str, plan: str, articles_text: str, article_cou
 
 {_BASE_RULES}
 
+{_TITLE_RULE}
+
 โครงสร้าง Work Plan (CRITICAL — ต้องสร้าง 10 <div class="page"> แยกกัน):
 
 หน้า 1 — ชื่อโครงการและภาพรวม:
   <span class="tag-research">แผนงาน/โครงการ</span>
-  <h2 class="article-title"> ชื่อโครงการ
+  <h2 class="article-title"> [ชื่อแผนปฏิบัติงาน/โครงการ — ดูกฎการตั้งชื่อท้ายพรอมต์]
   <p class="authors"> หน่วยงาน / ผู้รับผิดชอบ
   <hr class="divider">
   <div class="exec-box"> ภาพรวมโครงการ (วัตถุประสงค์หลัก กลุ่มเป้าหมาย ระยะเวลา งบประมาณรวม)
@@ -350,6 +393,7 @@ def build_custom_prompt(
         "workplan": "ผู้จัดการโครงการสาธารณสุขไทย",
     }
     _TAG_LABEL = {"policy": "Policy Brief", "plan": "แผนยุทธศาสตร์", "workplan": "แผนงาน/โครงการ"}
+    _TITLE_RULE = _TITLE_RULES.get(doc_type, _TITLE_RULES["policy"])
     doc_label  = _DOC_LABEL.get(doc_type, "รายงาน")
     doc_role   = _DOC_ROLE.get(doc_type, "ผู้เชี่ยวชาญ")
     tag_label  = _TAG_LABEL.get(doc_type, "รายงาน")
@@ -401,11 +445,13 @@ def build_custom_prompt(
 
 {_BASE_RULES}
 
+{_TITLE_RULE}
+
 โครงสร้างที่ MUST ใช้ — สร้าง {total_pages} <div class="page"> แยกกัน:
 
 หน้า 1 — ปกและบทสรุปผู้บริหาร:
   <span class="tag-research">{tag_label}</span>
-  <h2 class="article-title">ชื่อ{doc_label}ภาษาไทย — {query}</h2>
+  <h2 class="article-title">[ชื่อเอกสารที่คุณตั้งเองตามกฎการตั้งชื่อด้านล่าง]</h2>
   <p class="authors">ผู้จัดทำ / หน่วยงาน</p>
   <hr class="divider">
   <div class="exec-box"><p class="exec-label">บทสรุปผู้บริหาร</p>สรุปประเด็นสำคัญที่ครอบคลุมทุกหัวข้อที่เลือก 5-6 ประโยค</div>

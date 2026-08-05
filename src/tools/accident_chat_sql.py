@@ -13,6 +13,7 @@ DATA LIMITATIONS:
 """
 import json
 import logging
+import re
 from crewai.tools import tool
 from src.db.pool import query_db
 
@@ -1199,16 +1200,90 @@ def query_province_executive_summary(province: str = "มุกดาหาร",
 
 # ── Free-form SQL ─────────────────────────────────────────────────────────────
 
+#: คอลัมน์ที่ LLM มักเดาผิด → คอลัมน์จริงที่ควรใช้
+_COLUMN_FIXES = {
+    "province": "dim_geography.province_name (ต้อง JOIN dim_geography ON geography_id)",
+    "province_name": "dim_geography.province_name (fact_accident_event ไม่มีคอลัมน์นี้)",
+    "district": "dim_geography.district_name (ต้อง JOIN dim_geography)",
+    "year": "EXTRACT(YEAR FROM fact_accident_event.event_datetime)",
+    "deaths": "fact_accident_event.death_count",
+    "death": "fact_accident_event.death_count",
+    "injured": "fact_accident_event.injured_count",
+    "road_name": "dim_road_segment.road_name (ต้อง JOIN dim_road_segment)",
+}
+
+_MISSING_COL_RE = re.compile(r'column "?([\w.]+)"? does not exist', re.I)
+
+
+#: จังหวัดนอกเขต 10 ที่พบว่า LLM ชอบแต่งเพิ่มเข้ามาในคำตอบ (อยู่เขต 9 ติดกัน)
+_NEIGHBOUR_PROVINCES = (
+    "สุรินทร์", "บุรีรัมย์", "นครราชสีมา", "ชัยภูมิ", "ร้อยเอ็ด",
+    "มหาสารคาม", "ขอนแก่น", "กาฬสินธุ์", "สกลนคร", "นครพนม",
+)
+
+
+def find_foreign_provinces(answer: str) -> list[str]:
+    """หาจังหวัดนอกเขต 10 ที่โผล่ในคำตอบ
+
+    เจอจริง 2026-08-05 (ผู้ใช้จับได้):
+      ถาม "ปี 2567 เขตสุขภาพที่ 10 มีผู้เสียชีวิตกี่ราย แยกรายจังหวัด"
+      เครื่องมือคืน **5 จังหวัดถูกต้อง** (รวม 144 ราย)
+      แต่ AI แสดง **7 จังหวัด** เพิ่ม สุรินทร์ 67 และ บุรีรัมย์ 34 ซึ่งอยู่ **เขต 9**
+      ⇒ ตอบรวม 205 ราย **เกินจริง 61 ราย (42%)** และยังเขียนว่า
+        "สุรินทร์มีผู้เสียชีวิตสูงสุด" ทั้งที่ไม่ได้อยู่ในเขตที่ถาม
+
+    เป็นความผิดที่จับยากมาก — คำตอบมีตาราง มีตัวเลข มีบทวิเคราะห์ครบ
+    ต้องรู้ว่าเขต 10 มีจังหวัดอะไรบ้างถึงจะจับได้ ⇒ ต้องกันด้วยโค้ด
+    """
+    return [p for p in _NEIGHBOUR_PROVINCES if p in (answer or "")]
+
+
+def _sql_error_hint(err: str) -> str:
+    """แปลง error ของ Postgres เป็นคำแนะนำที่แก้ตามได้จริง
+
+    เป้าหมายคือให้ LLM "แก้ SQL แล้วลองใหม่" ไม่ใช่ยอมแพ้แล้วไปเขียนข้อเสนอแนะ
+    ให้ผู้ใช้ว่าฐานข้อมูลออกแบบไม่ดี (ซึ่งเกิดขึ้นจริงมาแล้ว)
+    """
+    m = _MISSING_COL_RE.search(err)
+    if m:
+        col = m.group(1).split(".")[-1].lower()
+        fix = _COLUMN_FIXES.get(col)
+        if fix:
+            return (f"คอลัมน์ '{col}' ไม่มีอยู่จริง — ให้ใช้ {fix} "
+                    f"แล้วเขียน query ใหม่ ห้ามสรุปว่าฐานข้อมูลขาดข้อมูล")
+        return (f"คอลัมน์ '{col}' ไม่มีอยู่จริง — เรียก get_accident_schema "
+                f"เพื่อดูชื่อคอลัมน์ที่ถูกต้อง แล้วเขียน query ใหม่")
+    if "relation" in err.lower() and "does not exist" in err.lower():
+        return "ชื่อตารางผิด — เรียก get_accident_schema เพื่อดูรายชื่อตารางที่มีจริง"
+    return "ตรวจไวยากรณ์ SQL แล้วลองใหม่ ห้ามสรุปว่าข้อมูลไม่มีจนกว่าจะ query สำเร็จ"
+
 @tool("execute_accident_sql")
 def execute_accident_sql(sql_query: str) -> str:
     """Execute a custom SELECT query on the accident database.
 
     Only SELECT or WITH queries are allowed.
 
-    Available tables: fact_accident_event, fact_accident_person (empty),
-      dim_geography, dim_road_segment, dim_time, dim_source,
-      mart_accident_summary, mart_accident_hotspot,
-      mart_province_year, mart_province_road
+    ⚠️ CRITICAL — `fact_accident_event` has NO province/district column.
+    Province lives in `dim_geography`. You MUST join to filter by province:
+
+        SELECT g.province_name, SUM(f.death_count) AS deaths
+        FROM fact_accident_event f
+        JOIN dim_geography g ON g.geography_id = f.geography_id
+        WHERE EXTRACT(YEAR FROM f.event_datetime) = 2024
+        GROUP BY g.province_name
+
+    Columns you can rely on:
+      fact_accident_event : accident_id, event_datetime, geography_id,
+                            road_segment_id, weather_condition, accident_type,
+                            severity_level, vehicle_type, injured_count,
+                            death_count, source_id
+      dim_geography       : geography_id, province_code, province_name,
+                            district_code, district_name, subdistrict_name,
+                            latitude, longitude
+      mart_province_year  : province_name, year_no, ... (pre-aggregated by year)
+
+    Health Region 10 = อุบลราชธานี, ศรีสะเกษ, ยโสธร, อำนาจเจริญ, มุกดาหาร ONLY.
+    Never include provinces outside this list when the question asks about เขต 10.
 
     Args:
         sql_query: Valid PostgreSQL SELECT or WITH query.
@@ -1228,7 +1303,17 @@ def execute_accident_sql(sql_query: str) -> str:
             "note": _YEAR_NOTE,
         }, ensure_ascii=False)
     except Exception as exc:
-        return json.dumps({"success": False, "error": str(exc), "query": sql}, ensure_ascii=False)
+        # ⚠️ คืน "วิธีแก้" ไปด้วย ไม่ใช่โยน error ดิบของ Postgres กลับไปเฉย ๆ
+        # เจอจริง 2026-08-05: LLM เขียน SQL ผิดได้ `column "province" does not exist`
+        # แล้วไปสรุปให้ผู้ใช้ว่า "ควรปรับปรุงโครงสร้างฐานข้อมูลให้มีคอลัมน์จังหวัด"
+        # ทั้งที่ฐานข้อมูลออกแบบถูกแล้ว — เอาความผิดพลาดของตัวเองไปโทษข้อมูล
+        # ถ้าบอกวิธีแก้ไปด้วย LLM จะแก้ SQL เองได้ในรอบถัดไปแทนที่จะยอมแพ้
+        return json.dumps({
+            "success": False,
+            "error": str(exc),
+            "query": sql,
+            "hint": _sql_error_hint(str(exc)),
+        }, ensure_ascii=False)
 
 
 @tool("get_accident_schema")

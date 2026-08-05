@@ -95,6 +95,7 @@ async def thaijo_generate_report(request: ThaiJoGenerateRequest) -> StreamingRes
                 doc_type=request.doc_type,
                 session_id=request.sessionId,
                 topic_plan=request.topic_plan,
+                report_title=request.report_title,
             )
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(
@@ -112,13 +113,29 @@ async def thaijo_generate_report(request: ThaiJoGenerateRequest) -> StreamingRes
 @router.post("/api/thaijo/topics")
 async def thaijo_plan_topics(request: ThaiJoTopicsRequest):
     """Generate AI-suggested topic headings for a report from pre-fetched articles."""
-    from src.agents.thaijo_agent import run_topic_planner
-    topics = run_topic_planner(
-        query=request.query,
-        articles_text=request.articles_text,
-        doc_type=request.doc_type,
-    )
-    return {"topics": topics}
+    import concurrent.futures as _cf
+
+    from src.agents.thaijo_agent import run_topic_planner, suggest_report_title
+
+    # ขอหัวข้อกับชื่อเอกสารพร้อมกัน — เป็น LLM คนละ call ที่ไม่ขึ้นต่อกัน
+    # รอเรียงกันจะทำให้ผู้ใช้รอนานขึ้นโดยไม่จำเป็น
+    with _cf.ThreadPoolExecutor(max_workers=2) as ex:
+        f_topics = ex.submit(
+            run_topic_planner,
+            query=request.query,
+            articles_text=request.articles_text,
+            doc_type=request.doc_type,
+        )
+        f_title = ex.submit(
+            suggest_report_title,
+            request.query, request.doc_type, request.articles_text,
+        )
+        topics = f_topics.result()
+        try:
+            title = f_title.result()
+        except Exception:
+            title = ""   # ตั้งชื่อไม่ได้ไม่ควรทำให้ทั้งขั้นตอนพัง หัวข้อยังใช้ได้
+    return {"topics": topics, "title": title}
 
 
 # ── POST /api/thaijo/demo — mock data ─────────────────────────────────────────

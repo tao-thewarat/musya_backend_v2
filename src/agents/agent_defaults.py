@@ -56,15 +56,33 @@ def _patch_gemini_429_backoff() -> None:
         )
         return jittered_delay
 
+
+def _report_pressure(err: str) -> None:
+    """แจ้ง AgentBudget ว่าชนโควตา เพื่อให้หดงบรวมชั่วคราว
+
+    เดิมโค้ดแค่ sleep แล้วลองใหม่ — ไม่มีใครรู้ว่าเกิด 429 บ่อยแค่ไหน และ
+    **ไม่เคยเก็บชื่อโควตา/ค่าเพดานที่ Google ส่งมาด้วย** ทั้งที่มันบอกเพดานจริงอยู่
+    ⇒ ต้องเดาเพดานเอาตลอด ตอนนี้เก็บไว้ดูได้ที่ GET /api/agent-budget
+    """
+    if "429" not in err and "RESOURCE_EXHAUSTED" not in err:
+        return  # 503/UNAVAILABLE เป็นปัญหาฝั่งบริการ ไม่ใช่โควตาเรา
+    try:
+        from src.tools.agent_budget import get_budget
+        get_budget().pressure.report_429(err)
+    except Exception:
+        pass  # ห้ามให้การรายงานสถิติทำให้ retry ที่กำลังทำงานอยู่พัง
+
     def _patched_handle(self, e, task, context, tools):
         err = str(e)
         if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
+            _report_pressure(err)
             time.sleep(_get_delay(self))
         return _original_handle(self, e, task, context, tools)
 
     async def _patched_handle_async(self, e, task, context, tools):
         err = str(e)
         if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
+            _report_pressure(err)
             await asyncio.sleep(_get_delay(self))
         return await _original_handle_async(self, e, task, context, tools)
 

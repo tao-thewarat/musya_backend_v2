@@ -16,6 +16,8 @@ class ThaiJoGenerateRequest(BaseModel):
     articles_text: str
     doc_type: str = "policy"   # policy | plan | workplan
     topic_plan: str = ""       # user-selected topics + notes (optional)
+    # ชื่อเอกสารที่ผู้ใช้ตรวจ/แก้เองก่อนกดสร้าง — ว่างไว้ = ให้ AI ตั้งเอง
+    report_title: str = ""
 
 
 class ThaiJoTopicsRequest(BaseModel):

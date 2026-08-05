@@ -81,6 +81,37 @@ def _narrows_scope(prompt: str, resolved: str) -> bool:
     return any(p in added for p in ZONE10_PROVINCES) or "อำเภอ" in added
 
 
+# คำถามที่หาความรู้ทั่วไป ไม่ใช่ตัวเลขของพื้นที่ — งานวิจัย/มาตรการ/แนวทาง
+_KNOWLEDGE_Q = re.compile(
+    r"งานวิจัย|วิจัย|บทความ|ผลการศึกษา|มาตรการ|แนวทาง|วิธีการ|รูปแบบ|โมเดล|"
+    r"ทฤษฎี|หลักฐานเชิงประจักษ์|best practice|intervention"
+)
+
+
+def _adds_unasked_place(prompt: str, resolved: str) -> bool:
+    """คำถามเดิม "ไม่ได้ระบุพื้นที่เลย" แต่ผลลัพธ์ดันเติมจังหวัดเข้ามา
+
+    เจอจริง 2026-08-03 (ผู้ใช้จับได้):
+      ถาม   "มีงานวิจัยอะไรเรื่องการป้องกันการฆ่าตัวตายในชุมชนชนบท"
+      กลายเป็น "...ในชุมชนชนบท **ของจังหวัดยโสธรและจังหวัดศรีสะเกษ** หรือไม่"
+      ⇒ ค้น ThaiJo ด้วยชื่อจังหวัดที่ผู้ใช้ไม่ได้ถาม พบแค่ 3 บทความ
+
+    ต่างจาก [_narrows_scope] ตรงที่อันนั้นดักเฉพาะกรณีผู้ใช้ระบุ "เขต 10" ไว้ชัด
+    ส่วนอันนี้ดักกรณี **ไม่ได้ระบุขอบเขตอะไรเลย** ซึ่งการ์ดเดิมครอบไม่ถึง
+
+    เงื่อนไขแคบไว้ก่อน — ปัดทิ้งเฉพาะเมื่อ:
+      1. คำถามเดิมไม่มีชื่อจังหวัด/อำเภอ/เขตใด ๆ
+      2. เป็นคำถามหาความรู้ (งานวิจัย/มาตรการ/แนวทาง) ซึ่งไม่ผูกกับพื้นที่โดยธรรมชาติ
+    ถ้าถามตัวเลขแบบ "มีผู้ป่วยกี่คน" การเติมจังหวัดจากบริบทยังถูกต้องอยู่ จึงไม่แตะ
+    """
+    has_place = any(p in prompt for p in ZONE10_PROVINCES) or bool(
+        re.search(r"อำเภอ|จังหวัด|เขต\s*(สุขภาพ)?\s*(ที่)?\s*10", prompt))
+    if has_place or not _KNOWLEDGE_Q.search(prompt):
+        return False
+    added = resolved.replace(prompt, "")
+    return any(p in added for p in ZONE10_PROVINCES) or "จังหวัด" in added
+
+
 def resolve_question(prompt: str, history_context: str, gemini_key: str) -> tuple[str, bool]:
     """Resolve a follow-up question using conversation history.
 
@@ -113,6 +144,9 @@ def resolve_question(prompt: str, history_context: str, gemini_key: str) -> tupl
             return prompt, False
         # ผู้ใช้ระบุ "ทั้งเขต 10" มาเองแล้ว ห้ามให้ประวัติย่อขอบเขตลงเป็นจังหวัด/อำเภอ
         if _narrows_scope(prompt, result):
+            return prompt, False
+        # ถามหางานวิจัย/มาตรการโดยไม่ระบุพื้นที่ ห้ามให้ประวัติเติมชื่อจังหวัดเข้ามา
+        if _adds_unasked_place(prompt, result):
             return prompt, False
         return result, True
     except Exception as exc:

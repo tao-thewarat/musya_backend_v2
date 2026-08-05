@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 import litellm
 
+from src.agents.research_relevance import filter_relevant_articles, summarize_drop
 from src.tools.error_logger import log_agent_error
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -141,6 +142,55 @@ _GENERIC_GEO_TERMS = {
     "thailand", "northeast thailand", "north east thailand", "northeastern thailand",
     "southeast asia", "south east asia", "mekong region", "mekong subregion", "asean",
 }
+
+
+# ชื่อจังหวัดเขต 10 ในรูปอังกฤษที่ LLM แปลออกมา (สะกดได้หลายแบบ)
+_PROV_EN = {
+    "ubon ratchathani": "อุบลราชธานี", "ubonratchathani": "อุบลราชธานี",
+    "sisaket": "ศรีสะเกษ", "si sa ket": "ศรีสะเกษ", "srisaket": "ศรีสะเกษ",
+    "yasothon": "ยโสธร", "amnat charoen": "อำนาจเจริญ", "amnatcharoen": "อำนาจเจริญ",
+    "mukdahan": "มุกดาหาร",
+}
+
+
+def _drop_unasked_provinces(query: str, prompt: str) -> str:
+    """ตัดชื่อจังหวัดออกจาก PubMed query ถ้าผู้ใช้ไม่ได้ถามถึงจังหวัดนั้นเอง
+
+    เจอจริง 2026-08-03 — ปัญหาเดียวกับ ThaiJo แต่หนักกว่ามาก เพราะวรรณกรรม
+    นานาชาติแทบไม่มีชื่อจังหวัดไทยปรากฏอยู่เลย วัดกับ PubMed จริง:
+
+        suicide prevention AND (Yasothon OR Sisaket)            →  1 บทความ
+        suicide prevention AND (Yasothon OR Sisaket OR Thailand) → 10 บทความ
+        suicide prevention rural community                       → 10 บทความ
+
+    Memory Agent เติม "ของจังหวัดยโสธรและศรีสะเกษ" จากประวัติแชทเข้าคำถามที่ผู้ใช้
+    ถามลอย ๆ ว่า "มีงานวิจัยอะไรเรื่องการป้องกันการฆ่าตัวตายในชุมชนชนบท"
+    พอแปลเป็นอังกฤษก็กลายเป็นเงื่อนไขที่แทบไม่มีบทความไหนผ่าน
+
+    ตัดทั้งกลุ่ม OR ที่มีแต่ชื่อจังหวัด — ถ้าในกลุ่มมี Thailand อยู่ด้วยก็เหลือ Thailand ไว้
+    """
+    if not _PROV_EN:
+        return query
+    asked = {en for en, th in _PROV_EN.items() if th in prompt or en in prompt.lower()}
+
+    def _keep(alt: str) -> bool:
+        a = alt.strip().lower()
+        return a not in _PROV_EN or a in asked
+
+    def _fix_group(m: re.Match) -> str:
+        alts = [a.strip() for a in m.group(1).split(" OR ") if a.strip()]
+        kept = [a for a in alts if _keep(a)]
+        if not kept:
+            return ""          # ทั้งกลุ่มเป็นจังหวัดที่ไม่ได้ถาม ⇒ ตัดทิ้งทั้งกลุ่ม
+        if len(kept) == len(alts):
+            return m.group(0)
+        return kept[0] if len(kept) == 1 else "(" + " OR ".join(kept) + ")"
+
+    out = re.sub(r"\(([^()]*)\)", _fix_group, query)
+    # เก็บกวาด AND ที่ห้อยอยู่หลังตัดกลุ่มทิ้ง
+    parts = [p.strip() for p in re.split(r"\s+AND\s+", out) if p.strip()]
+    parts = [p for p in parts if _keep(p)]
+    return " AND ".join(parts) if parts else query
 
 
 def _strip_generic_geo_terms(query: str) -> str:
@@ -278,6 +328,9 @@ def extract_pubmed_query(prompt: str, gemini_key: str) -> dict:
         text = resp.choices[0].message.content or ""
         query = _clean_query_output(text)
         if query:
+            # ⚠️ ตัดจังหวัดที่ผู้ใช้ไม่ได้ถาม — Memory Agent อาจเติมมาจากประวัติแชท
+            # วรรณกรรมนานาชาติแทบไม่มีชื่อจังหวัดไทย ใส่เข้าไปแล้วผลเหลือ 1 จาก 10
+            query = _drop_unasked_provinces(query, prompt)
             return {"query": query, "keywords": [], "reasoning": ""}
     except Exception as exc:
         log_agent_error(str(exc), agent_name="Keyword Extractor",
@@ -356,13 +409,35 @@ def run_pubmed_pipeline(
         articles = []
         fetcher_result = f"เกิดข้อผิดพลาดขณะค้นหา PubMed: {exc}"
 
-    article_count = len(articles)
-    articles_text = _articles_to_text(articles)
-
     put({"type": "agent_done", "step": "fetcher", "agentName": "PubMed Fetcher",
-         "result": fetcher_result, "articleCount": article_count})
+         "result": fetcher_result, "articleCount": len(articles)})
     agent_steps.append({"step": "fetcher", "agentName": "PubMed Fetcher",
                         "result": fetcher_result})
+
+    # ── STEP 1.5: Relevance Filter ─────────────────────────────────────────
+    # PubMed ค้นด้วย MeSH/keyword — คำพ้องบริบทลากงานคนละสาขาเข้ามาได้เหมือน ThaiJo
+    # (เทียบเคสจริง: ถามความเค็มในอาหาร แล้วได้งานความเค็มของน้ำในแม่น้ำ)
+    # ตัดสินจาก "คำถามภาษาไทยของผู้ใช้" ไม่ใช่ query อังกฤษ เพราะเจตนาอยู่ที่คำถามต้นทาง
+    dropped_articles: list[dict] = []
+    if articles:
+        put({"type": "agent_start", "step": "relevance", "agentName": "Relevance Filter"})
+        articles, dropped_articles = filter_relevant_articles(
+            prompt, articles, source="pubmed",
+        )
+        relevance_result = (
+            f"คัดออก {len(dropped_articles)} บทความที่ไม่ตรงหัวข้อ เหลือ {len(articles)} บทความ"
+            if dropped_articles else
+            f"บทความทั้ง {len(articles)} รายการตรงกับหัวข้อ ไม่มีรายการถูกคัดออก"
+        )
+        put({"type": "agent_done", "step": "relevance", "agentName": "Relevance Filter",
+             "result": relevance_result, "articleCount": len(articles),
+             "droppedCount": len(dropped_articles),
+             "reasoning": summarize_drop(dropped_articles)})
+        agent_steps.append({"step": "relevance", "agentName": "Relevance Filter",
+                            "result": relevance_result})
+
+    article_count = len(articles)
+    articles_text = _articles_to_text(articles)
 
     # ── STEP 2: Stream article summaries as text ───────────────────────────
     sep_heavy = "═" * 44 + "\n\n"
@@ -394,6 +469,10 @@ def run_pubmed_pipeline(
             full_text += "\n" + sep_light
     else:
         full_text += "ไม่พบบทความที่เกี่ยวข้อง ลองใช้คำค้นหาอื่น หรือถามให้เจาะจงมากขึ้น\n"
+
+    drop_note = summarize_drop(dropped_articles)
+    if drop_note:
+        full_text += f"{sep_light}{drop_note}\n"
 
     put({"type": "text_stream_start", "articleCount": article_count})
 

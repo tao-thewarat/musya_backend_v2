@@ -29,9 +29,13 @@ class TestLinkifyBareUrls:
         assert result == html
 
     def test_strips_trailing_punctuation_from_wrapped_url(self):
+        # ข้อความลิงก์ถูกย่อแล้ว (URL ไทยยาว 300+ ตัวกลืนทั้งรายการอ้างอิง)
+        # เจตนาของเทสต์นี้คือ "จุดท้ายประโยคต้องไม่ถูกกลืนเข้า href" ซึ่งยังต้องจริง
         html = 'อ้างอิงจาก https://example.com/report. ต่อด้วยประโยคถัดไป'
         result = _linkify_bare_urls(html)
-        assert '>https://example.com/report</a>. ต่อด้วย' in result
+        assert 'href="https://example.com/report"' in result
+        assert '</a>. ต่อด้วย' in result
+        assert 'report."' not in result
 
     def test_wraps_multiple_bare_urls_in_reference_list(self):
         html = (
@@ -53,5 +57,6 @@ class TestLinkifyBareUrls:
         เข้าไปเป็นส่วนหนึ่งของ URL/ลิงก์ไปด้วย ทำให้ลิงก์พาไปหน้าที่ไม่มีจริง"""
         html = '1. สำนักงานสาธารณสุขจังหวัดยโสธร. [URL: http://localhost:3000/api/pdf/view/912883]'
         result = _linkify_bare_urls(html)
-        assert '<a href="http://localhost:3000/api/pdf/view/912883" target="_blank" rel="noopener noreferrer">http://localhost:3000/api/pdf/view/912883</a>]' in result
-        assert 'view/912883]"' not in result
+        assert 'href="http://localhost:3000/api/pdf/view/912883"' in result
+        assert '</a>]' in result, "วงเล็บปิดต้องอยู่นอกลิงก์"
+        assert 'view/912883]"' not in result, "วงเล็บต้องไม่ถูกกลืนเข้า href"

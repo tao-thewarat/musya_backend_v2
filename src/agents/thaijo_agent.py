@@ -31,6 +31,7 @@ from openai import OpenAI
 from src.config import get_settings
 from src.tools.error_logger import log_agent_error
 from src.agents.csv_pipeline import _run_agent, _is_agent_error
+from src.agents.research_relevance import filter_relevant_articles, summarize_drop
 
 
 def _get_llm() -> LLM:
@@ -217,7 +218,12 @@ def _linkify_bare_urls(html: str) -> str:
         def repl(m: re.Match) -> str:
             url = m.group(1).rstrip(".,;)]")
             trail = m.group(1)[len(url):]
-            return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>{trail}'
+            # แสดงข้อความสั้น แต่ href ยังเป็น URL เต็ม — URL ภาษาไทยถูกเข้ารหัส
+            # เป็น percent-encoding ยาว 300+ ตัวอักษร กลืนทั้งรายการอ้างอิง
+            from src.tools.link_text import short_link_text
+            label = short_link_text(url)
+            return (f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+                    f'title="{url}">{label}</a>{trail}')
         return _BARE_URL_RE.sub(repl, segment)
 
     # แยกส่วนที่เป็น <a>...</a> อยู่แล้วออกไป กัน linkify ซ้อนกันเอง (nested <a> ผิด HTML)
@@ -317,6 +323,9 @@ _KEYWORD_PROMPT_TMPL = """จากคำถาม/หัวข้อต่อ�
 }}
 
 กฎ:
+- **ห้ามใส่ชื่อจังหวัด/อำเภอลงใน term** เว้นแต่ผู้ใช้ถามถึงพื้นที่นั้นตรง ๆ
+  งานวิจัยในฐานข้อมูลไม่ได้ผูกกับพื้นที่ ใส่ชื่อจังหวัดเข้าไปแล้วจะหาแทบไม่เจอ
+  เจอจริง: ค้น "ป้องกันการฆ่าตัวตาย ชุมชนชนบท ยโสธร ศรีสะเกษ" พบแค่ 3 บทความ
 - term ต้องสั้น กระชับ เน้น concept หลัก ไม่เกิน 5 คำ
 - ถ้า prompt มีคำว่า "นโยบาย" หรือ "มาตรการ" ให้รักษาคำนั้นไว้ใน term ด้วย
 - ใช้คำศัพท์ทางการแพทย์/วิชาการภาษาไทย
@@ -330,6 +339,33 @@ _KEYWORD_PROMPT_TMPL = """จากคำถาม/หัวข้อต่อ�
   "นโยบายสาธารณสุข ความดันโลหิตสูง"                     → term: "ความดันโลหิตสูง นโยบาย"
   "นโยบายลดอุบัติเหตุทางถนน จังหวัดอุบลราชธานี 10 ปี"  → term: "อุบัติเหตุทางถนน นโยบาย อุบลราชธานี"
   "มาตรการป้องกันโรคไม่ติดต่อเรื้อรัง"                   → term: "โรคไม่ติดต่อ มาตรการ\""""
+
+
+_ZONE10_NAMES = ("อุบลราชธานี", "ศรีสะเกษ", "ยโสธร", "อำนาจเจริญ", "มุกดาหาร")
+
+
+def _strip_places(term: str, prompt: str) -> str:
+    """ตัดชื่อจังหวัดออกจากคำค้น ถ้าผู้ใช้ไม่ได้ถามถึงจังหวัดนั้นเอง
+
+    เจอจริง 2026-08-03 (ผู้ใช้จับได้):
+      ถาม "มีงานวิจัยอะไรเรื่องการป้องกันการฆ่าตัวตายในชุมชนชนบท"
+      Memory Agent เติม "ของจังหวัดยโสธรและจังหวัดศรีสะเกษ" จากประวัติแชท
+      ⇒ ค้น ThaiJo ด้วยชื่อจังหวัด **พบแค่ 3 บทความ** ทั้งที่หัวข้อนี้มีงานวิจัยเยอะ
+
+    งานวิจัยในฐานข้อมูลวิชาการไม่ได้ผูกกับพื้นที่ — บทความเรื่องการป้องกันการฆ่าตัวตาย
+    ที่ทำในเชียงใหม่ก็ใช้อ้างอิงได้ การใส่ชื่อจังหวัดจึงตัดผลลัพธ์ที่ควรเจอทิ้งไปเปล่า ๆ
+
+    กันที่ชั้นนี้อีกชั้นเพราะพรอมต์อย่างเดียวเชื่อไม่ได้ — และคำค้นอาจถูกเติมชื่อจังหวัด
+    มาตั้งแต่ Memory Agent ก่อนถึง Keyword Extractor เสียอีก
+    """
+    out = term
+    for p in _ZONE10_NAMES:
+        if p in out and p not in prompt:
+            out = out.replace(p, " ")
+    out = re.sub(r"\s*(จังหวัด|จ\.)\s*(?=\s|$)", " ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,·และ")
+    # ถ้าตัดจนแทบไม่เหลืออะไร ให้ใช้ของเดิมดีกว่า — ค้นด้วยคำว่างยิ่งแย่
+    return out if len(out) >= 4 else term
 
 
 def _extract_search_payload(prompt: str, gemini_key: str) -> dict:
@@ -368,6 +404,7 @@ def _extract_search_payload(prompt: str, gemini_key: str) -> dict:
             #   "ซึมเศร้า ผู้สูงอายุ"                        → strict 845 · loose 10000
             # ถ้า strict แล้วได้ 0 ค่อยถอยไป loose ใน fetch_thaijo_articles
             data["strict"] = True
+            data["term"] = _strip_places(str(data["term"]), prompt)
             return data
     except Exception as exc:
         log_agent_error(str(exc), agent_name="Keyword Extractor",
@@ -778,17 +815,39 @@ def run_thaijo_pipeline(
             f"ไม่พบบทความจาก ThaiJo API — สร้างรายงานจากความรู้ทั่วไป"
         )
 
-    article_count = len(articles)
-    articles_text = _articles_to_text(articles)
-
     # Use original Thai prompt as report title; English term was for API search only
     query_for_plan = _DEMO_PROMPT if use_mock else prompt
 
     put({"type": "agent_done", "step": "fetcher", "agentName": "ThaiJo Fetcher",
-         "result": fetcher_result, "articleCount": article_count,
+         "result": fetcher_result, "articleCount": len(articles),
          "isDemo": use_mock})
     agent_steps.append({"step": "fetcher", "agentName": "ThaiJo Fetcher",
                         "result": fetcher_result})
+
+    # ── STEP 1.5: Relevance Filter ─────────────────────────────────────────
+    # ThaiJo จับคู่ด้วย "คำ" ไม่ใช่ "ความหมาย" — ถาม "มาตรการลดหวานมันเค็ม" แล้วได้
+    # "การรุกล้ำความเค็มในแม่น้ำท่าจีน" ติดมาด้วย เพราะตรงคำว่าเค็ม+มาตรการ
+    # ด่านนี้อ่านความหมายหลังได้ผลแล้ว และเอนไปทาง "เก็บไว้" เสมอ (ดู research_relevance)
+    dropped_articles: list[dict] = []
+    if articles and not use_mock:
+        put({"type": "agent_start", "step": "relevance", "agentName": "Relevance Filter"})
+        articles, dropped_articles = filter_relevant_articles(
+            query_for_plan, articles, source="thaijo",
+        )
+        relevance_result = (
+            f"คัดออก {len(dropped_articles)} บทความที่ไม่ตรงหัวข้อ เหลือ {len(articles)} บทความ"
+            if dropped_articles else
+            f"บทความทั้ง {len(articles)} รายการตรงกับหัวข้อ ไม่มีรายการถูกคัดออก"
+        )
+        put({"type": "agent_done", "step": "relevance", "agentName": "Relevance Filter",
+             "result": relevance_result, "articleCount": len(articles),
+             "droppedCount": len(dropped_articles),
+             "reasoning": summarize_drop(dropped_articles)})
+        agent_steps.append({"step": "relevance", "agentName": "Relevance Filter",
+                            "result": relevance_result})
+
+    article_count = len(articles)
+    articles_text = _articles_to_text(articles)
 
     # ── STEP 2: Insight Analyst (เฉพาะเมื่อพบบทความ) ────────────────────────
     insight_text = ""
@@ -878,6 +937,12 @@ def run_thaijo_pipeline(
     else:
         full_text += "ไม่พบบทความที่เกี่ยวข้อง กรุณาลองใช้คำค้นหาอื่น\n"
 
+    # แสดงรายการที่ด่านคัดออก — ตัดเงียบ ๆ แล้วผู้ใช้เห็นแค่จำนวนบทความหายไป
+    # จะกลายเป็นบั๊กที่ผู้ใช้ debug ไม่ได้ และเราตรวจย้อนหลังไม่ได้ด้วย
+    drop_note = summarize_drop(dropped_articles)
+    if drop_note:
+        full_text += f"{sep_light}{drop_note}\n"
+
     put({"type": "text_stream_start", "articleCount": article_count})
 
     chunk_size = 200
@@ -906,6 +971,7 @@ def run_thaijo_report_pipeline(
     doc_type: str = "policy",
     session_id: str = "",
     topic_plan: str = "",
+    report_title: str = "",
 ) -> None:
     """Generate structured report from already-fetched ThaiJo articles.
     Streams: agent_start/done + generator_chunk + final(reportHtml)
@@ -949,6 +1015,15 @@ def run_thaijo_report_pipeline(
     # ── Report Generator (streaming HTML) ───────────────────────────────────
     put({"type": "agent_start", "step": "generator", "agentName": "Report Generator"})
     gen_prompt = build_prompt(doc_type, query, plan, articles_text, article_count, topic_plan)
+    if report_title.strip():
+        # ผู้ใช้ตรวจ/แก้ชื่อมาแล้ว ⇒ ต้องใช้ตามนั้นเป๊ะ ห้าม AI ตั้งใหม่
+        # ต่อท้ายพรอมต์เพราะคำสั่งท้ายสุดมีน้ำหนักกว่ากฎที่อยู่กลางพรอมต์
+        _t = report_title.strip()
+        gen_prompt += (
+            "\n\n⚠️ บังคับ: ใช้ชื่อเอกสารนี้เท่านั้น ห้ามเปลี่ยนแม้แต่ตัวอักษรเดียว\n"
+            f'<h2 class="article-title">{_t}</h2>\n'
+            "กฎการตั้งชื่อด้านบนให้ข้ามไป เพราะผู้ใช้ยืนยันชื่อมาแล้ว"
+        )
     html_parts: list[str] = []
 
     try:
@@ -986,7 +1061,9 @@ def run_thaijo_report_pipeline(
 
     # ── Extract AI-generated title from HTML ──────────────────────────────
     title_match = re.search(r'<h2[^>]*class=["\']article-title["\'][^>]*>\s*(.*?)\s*</h2>', full_html, re.IGNORECASE | re.DOTALL)
-    if title_match:
+    if report_title.strip():
+        pass                      # ผู้ใช้ยืนยันมาแล้ว ใช้ตามนั้น
+    elif title_match:
         report_title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
     else:
         report_title = query
@@ -1030,6 +1107,52 @@ _FALLBACK_TOPICS: dict[str, list[dict]] = {
         {"id": "6", "title": "งบประมาณและทรัพยากร",                  "desc": "การจัดสรรงบประมาณแต่ละกิจกรรม และการใช้ทรัพยากรอื่น"},
     ],
 }
+
+
+def suggest_report_title(query: str, doc_type: str = "policy",
+                        articles_text: str = "") -> str:
+    """เสนอ "ชื่อเอกสาร" ให้ผู้ใช้ตรวจ/แก้ก่อนกดสร้างจริง
+
+    ทำไมต้องมีขั้นนี้: เดิมชื่อเรื่องถูกตั้งตอนสร้างเอกสารเสร็จแล้ว ผู้ใช้เห็นชื่อ
+    เป็นครั้งแรกตอนที่แก้อะไรไม่ได้แล้ว — ถ้าชื่อไม่ตรงชนิดเอกสารก็ต้องสร้างใหม่ทั้งฉบับ
+    ซึ่งกิน quota และเวลาหลายนาที
+
+    ใช้กฎตั้งชื่อชุดเดียวกับตอนสร้างเอกสารจริง (`title_rule`) เพื่อให้ชื่อที่เสนอ
+    กับชื่อที่ได้จริงเป็นแนวเดียวกัน ไม่ใช่คนละเรื่อง
+    """
+    from src.agents.thaijo_prompts import doc_type_label, title_rule
+
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_key or not query.strip():
+        return ""
+    try:
+        resp = litellm.completion(
+            model="gemini/gemini-2.5-flash-lite",
+            api_key=gemini_key,
+            messages=[
+                {"role": "system",
+                 "content": "คุณเป็นผู้เชี่ยวชาญการตั้งชื่อเอกสารราชการด้านสาธารณสุขไทย"},
+                {"role": "user", "content": (
+                    f"คำขอจากผู้ใช้: {query}\n"
+                    f"ประเภทเอกสารที่ต้องการ: {doc_type_label(doc_type)}\n\n"
+                    + (f"บทความที่เกี่ยวข้อง:\n{articles_text[:1200]}\n\n"
+                       if articles_text else "")
+                    + title_rule(doc_type)
+                    + "\n\nตอบเป็น 'ชื่อเอกสาร' บรรทัดเดียวเท่านั้น "
+                      "ห้ามมีเครื่องหมายคำพูด ห้ามมีคำอธิบายใด ๆ"
+                )},
+            ],
+            temperature=0.3,
+            max_tokens=120,
+        )
+        title = (resp.choices[0].message.content or "").strip()
+        title = title.split("\n")[0].strip().strip('"').strip("'").strip()
+        # ยาวเกินไปคือสัญญาณว่าโมเดลอธิบายแทนที่จะตั้งชื่อ ⇒ ไม่เอาดีกว่าเอาผิด
+        return title if 8 <= len(title) <= 200 else ""
+    except Exception as exc:
+        log_agent_error(str(exc), agent_name="Title Suggester",
+                        step="title", domain="thaijo", prompt=query[:120])
+        return ""
 
 
 def run_topic_planner(

@@ -1,4 +1,4 @@
-"""Domain definitions — health analysis domains d0–d8."""
+"""Domain definitions — health analysis domains d0–d6."""
 from dataclasses import dataclass
 
 

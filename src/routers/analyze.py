@@ -9,7 +9,9 @@ from functools import partial
 from typing import Any
 
 # จำกัด 5 AI pipelines พร้อมกันต่อ worker (4 workers = 20 concurrent รวม)
-_AI_SEMAPHORE = threading.BoundedSemaphore(5)
+# งบ agent ย้ายไปอยู่ใน src/tools/agent_budget.py — ปรับตามจำนวนผู้ใช้ที่ใช้งานจริง
+# (เดิม BoundedSemaphore(5) + acquire(blocking=False) เด้งคนที่ 6 ทันทีโดยไม่มีคิว)
+from src.tools.agent_budget import get_budget, lane_of, want_for
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -160,6 +162,7 @@ def _orchestrate(
     retry_source: str = "",
     report_title: str = "",
     chat_provider: str = "",
+    budget_user: str = "",
 ) -> None:
     """Full pipeline entry point — runs in a background thread."""
     def put(ev: dict[str, Any]) -> None:
@@ -167,6 +170,55 @@ def _orchestrate(
 
     def finish() -> None:
         asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+    # ── ขอ "งบ agent" ก่อนเริ่มงานจริง พร้อมแจ้งผู้ใช้ระหว่างรอ ──────────────
+    # ขอในเธรดนี้ (ไม่ใช่ก่อนเปิด stream) เพื่อให้ผู้ใช้เห็นข้อความ "กำลังรอคิว"
+    # ทันที แทนที่จะเห็นหน้าจอค้างเงียบ ๆ แล้วเดาเองว่าระบบแฮงก์หรือเปล่า
+    from src.tools.agent_budget import get_budget, lane_of, want_for
+
+    _budget = get_budget()
+    _lane = lane_of(mode)
+    _snap = _budget.snapshot()
+    if _snap["in_use"] >= _snap["effective_total"] or _snap["waiting"] > 0:
+        put({
+            "type": "queued",
+            "activeUsers": _snap["active_users"],
+            "position": _snap["waiting"] + 1,
+            "message": (
+                f"ขณะนี้มีผู้ใช้งานพร้อมกัน {_snap['active_users']} คน "
+                f"ระบบกำลังจัดคิวให้ กรุณารอสักครู่"
+            ),
+        })
+
+    budget_slots = _budget.acquire(
+        budget_user, want_for(mode),
+        float(os.getenv("AGENT_BUDGET_WAIT_SECONDS", "") or 300), _lane,
+    )
+    if budget_slots <= 0:
+        s2 = _budget.snapshot()
+        put({"type": "error", "busy": s2, "message": (
+            f"ตอนนี้มีผู้ใช้งานพร้อมกัน {s2['active_users']} คน "
+            "และคิวยาวเกินกว่าจะรอไหว กรุณาลองใหม่อีกครั้งในอีกสักครู่")})
+        finish()
+        return
+
+    if budget_slots < want_for(mode):
+        # บอกตรง ๆ ว่าทำงานแบบจำกัด ไม่ใช่ปล่อยให้ผู้ใช้สงสัยว่าทำไมช้ากว่าปกติ
+        put({"type": "budget_limited", "granted": budget_slots,
+             "activeUsers": _budget.active_users(),
+             "message": (
+                 f"มีผู้ใช้งานพร้อมกัน {_budget.active_users()} คน "
+                 f"ระบบจะทยอยค้นข้อมูลทีละ {budget_slots} ส่วน อาจใช้เวลานานกว่าปกติ")})
+
+    # แจ้งผู้ใช้เมื่อชนโควตา Gemini — เดิมระบบเงียบแล้ว retry เอง ผู้ใช้เห็นแค่
+    # "ช้าผิดปกติ" โดยไม่รู้สาเหตุ และมักกดซ้ำซึ่งยิ่งซ้ำเติมโควตาที่ตันอยู่แล้ว
+    def _on_quota(factor: float, detail: str) -> None:
+        put({"type": "quota_wait", "pressure": round(factor, 2), "detail": detail,
+             "message": (
+                 "ชนโควตาการใช้งาน AI ชั่วคราว — ระบบกำลังรอแล้วลองใหม่ให้อัตโนมัติ "
+                 "กรุณาอย่าปิดหน้าจอหรือกดซ้ำ")})
+
+    _budget.pressure.add_listener(_on_quota)
 
     try:
         # Merge history
@@ -242,6 +294,7 @@ def _orchestrate(
                 from src.tools.accident_chat_sql import (
                     detect_zone10_provinces,
                     detect_out_of_zone10_provinces,
+                    find_foreign_provinces,
                     ZONE10_PROVINCES as _Z10,
                 )
 
@@ -303,6 +356,26 @@ def _orchestrate(
                     ).result()
                 put({"type": "agent_done", "step": "accident_sql", "agentName": "Accident SQL Agent",
                      "result": f"ดึงข้อมูลอุบัติเหตุทางถนน {_scope_label} สำเร็จ"})
+
+                # ── การ์ด: AI แต่งจังหวัดนอกเขต 10 เพิ่มเข้ามาในคำตอบ ──────────
+                # เจอจริง 2026-08-05: เครื่องมือคืน 5 จังหวัด (รวม 144 ราย)
+                # แต่ AI แสดง 7 จังหวัด เพิ่มสุรินทร์+บุรีรัมย์ (เขต 9) รวมเป็น 205
+                # เกินจริง 42% — ต่อท้ายคำเตือนไว้ให้ผู้ใช้เห็น ไม่ปัดคำตอบทิ้ง
+                # เพราะตัวเลขของ 5 จังหวัดที่เหลือยังถูกต้องและมีประโยชน์
+                if not _province:
+                    _foreign = find_foreign_provinces(acc_result.answer)
+                    if _foreign:
+                        acc_result.answer += (
+                            "\n\n---\n\n> ⚠️ **คำเตือนจากระบบ:** คำตอบข้างต้นมีชื่อจังหวัด "
+                            + ", ".join(_foreign)
+                            + " ซึ่ง **ไม่ได้อยู่ในเขตสุขภาพที่ 10** "
+                            "(มีเฉพาะ อุบลราชธานี · ศรีสะเกษ · ยโสธร · อำนาจเจริญ · มุกดาหาร) "
+                            "ตัวเลขของจังหวัดเหล่านั้นและยอดรวมจึงเชื่อถือไม่ได้ "
+                            "กรุณาถามใหม่โดยระบุจังหวัดที่ต้องการ"
+                        )
+                        logger.warning(
+                            "Accident SQL Agent แต่งจังหวัดนอกเขต 10: %s", _foreign)
+
                 if session_id:
                     append_history(session_id, "assistant", acc_result.answer)
                 put({"type": "result", "content": acc_result.answer,
@@ -444,11 +517,17 @@ def _orchestrate(
                     except Exception as exc:
                         put({"type": "agent_done", "step": name, "agentName": name, "result": f"ผิดพลาด: {exc}"})
 
+            # ⚠️ ใช้ articles_text เป็นตัวสำรองเมื่อ full_text ว่าง
+            # ผู้ใช้รายงาน 2026-08-06: ช่องขวาแสดงแต่ PubMed ทั้งที่แชทขึ้น ThaiJo 2 บทความ
+            # แปลว่า ThaiJo ส่ง articlesText มาแต่ textResult ว่าง ⇒ section หายไปเงียบ ๆ
+            # ยึดหลัก "มีบทความก็ต้องแสดง" ไม่ปล่อยให้ฟิลด์เดียวว่างแล้วทิ้งทั้งแหล่ง
             sections = []
-            if thaijo_result.get("full_text"):
-                sections.append(f"## งานวิจัยที่เกี่ยวข้อง (ThaiJo)\n\n{thaijo_result['full_text']}")
-            if pubmed_result.get("full_text"):
-                sections.append(f"## งานวิจัยทางการแพทย์ (PubMed)\n\n{pubmed_result['full_text']}")
+            _tj = thaijo_result.get("full_text") or thaijo_result.get("articles_text") or ""
+            _pm = pubmed_result.get("full_text") or pubmed_result.get("articles_text") or ""
+            if _tj:
+                sections.append(f"## งานวิจัยที่เกี่ยวข้อง (ThaiJo)\n\n{_tj}")
+            if _pm:
+                sections.append(f"## งานวิจัยทางการแพทย์ (PubMed)\n\n{_pm}")
             combined_text = "\n\n---\n\n".join(sections) if sections else (
                 "ไม่พบบทความที่เกี่ยวข้องทั้งจาก ThaiJo และ PubMed ลองปรับคำถามให้เจาะจงมากขึ้น"
             )
@@ -878,7 +957,10 @@ def _orchestrate(
                 put({"type": "report_source_status", "source": _name,
                      "label": _SOURCE_LABELS[_name], "status": "pending"})
 
-            with _cf.ThreadPoolExecutor(max_workers=5) as ex:
+            # จำนวน worker มาจาก "งบที่ได้จริง" ไม่ใช่ค่าคงที่ 5
+            # เวลาคนใช้เยอะ งบจะเหลือน้อย ⇒ ยิงทีละน้อยแทนที่จะฝ่าเพดานไปชน 429
+            _pool_size = max(1, min(budget_slots or 5, len(sources_to_run) or 1))
+            with _cf.ThreadPoolExecutor(max_workers=_pool_size) as ex:
                 # ⚠️ ทยอยเริ่มแต่ละ worker ห่างกัน ~1.5s แทนที่จะยิง LLM ทั้ง 5 ตัว
                 # พร้อมกันเป๊ะในวินาทีเดียว — ลดโอกาสชน 429 quota-per-minute
                 # (input token) ตอนมีหลาย request วิ่งพร้อมกันอยู่แล้ว โดยแทบไม่
@@ -939,6 +1021,12 @@ def _orchestrate(
                 "ไม่พบข้อมูลที่เกี่ยวข้องจากแหล่งข้อมูลใดเลย (สถิติ/คลังความรู้/งานวิจัย/PubMed/เว็บ) "
                 "ลองระบุคำถามให้เจาะจงมากขึ้น เช่น ระบุจังหวัดหรือหัวข้อสุขภาพที่ต้องการ"
             )
+            # ย่อข้อความลิงก์ให้อ่านได้ — URL ภาษาไทยถูกเข้ารหัสเป็น percent-encoding
+            # ยาว 300+ ตัวอักษรต่อรายการ รายการอ้างอิง 8 รายการกลืนทั้งหน้า
+            # href ยังเป็น URL เต็ม กดแล้วไปถูกที่เหมือนเดิม
+            from src.tools.link_text import shorten_urls_markdown
+
+            combined_text = shorten_urls_markdown(combined_text)
 
             for i in range(0, len(combined_text), 400):
                 put({"type": "text_chunk", "text": combined_text[i:i + 400]})
@@ -1119,14 +1207,22 @@ def _orchestrate(
         put({"type": "error", "message": str(exc)})
     finally:
         finish()
-        _AI_SEMAPHORE.release()
+        _budget.pressure.remove_listener(_on_quota)
+        # คืนงบ agent เสมอ แม้ pipeline จะพังกลางทาง ไม่งั้นงบจะรั่วจนระบบตันเอง
+        if budget_slots > 0:
+            _budget.release(budget_user, budget_slots)
 
 
 async def _handle_analyze(request: AnalyzeRequest) -> StreamingResponse:
-    if not _AI_SEMAPHORE.acquire(blocking=False):
-        async def busy_stream():
-            yield f"data: {json.dumps({'type': 'error', 'message': 'ระบบกำลังประมวลผลเต็มความสามารถ กรุณารอสักครู่แล้วลองใหม่'}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(busy_stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
+    # ── จองงบ agent แทนการปฏิเสธทิ้ง ──────────────────────────────────────
+    # เดิม `_AI_SEMAPHORE.acquire(blocking=False)` รับได้ 5 request ทั้งระบบ
+    # และเด้งคนที่ 6 ทันทีโดยไม่มีคิว ⇒ 60 คนกดพร้อมกัน 55 คนโดนเด้ง
+    # ตอนนี้แบ่งงบรวมให้คนที่ใช้งานอยู่เท่า ๆ กัน แล้ว "รอคิว" ถ้ายังไม่ว่าง
+    # ⚠️ ใช้ sessionId เป็นตัวแทน "ผู้ใช้" เพราะ backend ไม่ได้รับ user id
+    #    ข้อจำกัด: เปิดหลายแท็บจะถูกนับเป็นหลายคน (ได้งบรวมมากกว่าที่ควร)
+    budget = get_budget()
+    user_key = request.sessionId or "anon"
+    budget.touch(user_key)
 
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     loop = asyncio.get_event_loop()
@@ -1147,6 +1243,7 @@ async def _handle_analyze(request: AnalyzeRequest) -> StreamingResponse:
             "retry_source": request.retry_source or "",
             "report_title": request.report_title or "",
             "chat_provider": request.chat_provider or "",
+            "budget_user": user_key,
         },
         daemon=True,
     )
@@ -1169,6 +1266,17 @@ async def _handle_analyze(request: AnalyzeRequest) -> StreamingResponse:
 @router.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@router.get("/api/agent-budget")
+async def agent_budget_status():
+    """สถานะงบ agent ปัจจุบัน — ใช้ดูว่าตั้งค่าเหมาะกับโหลดจริงหรือยัง
+
+    ค่า TOTAL ที่ตั้งไว้เป็น "การเดาที่ตั้งใจ" (เหมือนเลข 5 เดิมที่หาที่มาไม่เจอ)
+    ต้องดูตัวเลขจริงจาก endpoint นี้แล้วปรับ โดยเฉพาะ `total_429` ซึ่งควรเป็น 0
+    ถ้าไม่เป็น 0 แปลว่างบตั้งสูงเกินไป และ `last_quota_detail` จะบอกเพดานจริงของ Google
+    """
+    return get_budget().snapshot()
 
 
 @router.post("/api/analyze")
